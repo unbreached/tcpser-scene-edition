@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.tcpser.bbs</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/local/bin/tcpser</string>
+    <string>-d</string>
+    <string>/dev/ttyUSB0</string>
+    <string>-s</string>
+    <string>2400</string>
+    <string>-p</string>
+    <string>6400</string>
+    <string>-l</string>
+    <string>4</string>
+    <string>-x</string>
+    <string>-O</string>
+    <string>/usr/local/share/tcpser/connections.csv</string>
+    <string>-L</string>
+    <string>/var/log/tcpser.log</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/usr/local/share/tcpser</string>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>KeepAlive</key>
+  <true/>
+
+  <!-- Restart on crash, wait 5 seconds between attempts -->
+  <key>ThrottleInterval</key>
+  <integer>5</integer>
+
+  <key>StandardOutPath</key>
+  <string>/var/log/tcpser.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>/var/log/tcpser.log</string>
+
+  <!--
+    INSTALL:
+      sudo cp com.tcpser.bbs.plist /Library/LaunchDaemons/
+      sudo launchctl load /Library/LaunchDaemons/com.tcpser.bbs.plist
+
+    UNINSTALL:
+      sudo launchctl unload /Library/LaunchDaemons/com.tcpser.bbs.plist
+      sudo rm /Library/LaunchDaemons/com.tcpser.bbs.plist
+
+    EDIT the ProgramArguments above to match your setup:
+      - Serial device (-d /dev/ttyUSB0 or /dev/cu.usbserial-*)
+      - Baud rate (-s 2400)
+      - Listen port (-p 6400)
+      - Gate mode (-x for backspace, -k password for password)
+      - Banner file (-P /path/to/banner.seq)
+  -->
+</dict>
+</plist>

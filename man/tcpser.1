@@ -1,0 +1,228 @@
+.\"                                      Hey, EMACS: -*- nroff -*-
+.TH TCPSER 1 "June 2026" "tcpser 1.2.1"
+.SH NAME
+tcpser \- Hayes compatible modem emulator over TCP/IP
+.SH SYNOPSIS
+.B tcpser
+\-d \fIdevice\fP [\-s \fIspeed\fP] [\fIoptions\fP] ...
+.br
+.B tcpser
+\-v \fIport\fP [\-s \fIspeed\fP] [\fIoptions\fP] ...
+.br
+.B tcpser
+\-d \fIdevice\fP \-Z
+.SH DESCRIPTION
+\fBtcpser\fP turns a PC serial port into an emulated Hayes compatible modem that
+uses TCP/IP for incoming and outgoing connections.  It can be used to allow
+older applications and systems designed for modem use to operate on the
+Internet.  Designed for hosting Commodore 64 BBS systems with SwiftLink,
+Turbo232, GLINK232, and userport RS232 adapters.
+.PP
+This hardened fork adds a security gate (bot protection), persistent IP
+blocklist, PETSCII pre-connect screens, and an RS232 analyzer mode for
+diagnosing adapter wiring.
+.SH OPTIONS
+.SS "Serial Port"
+.TP
+.BI \-d " device"
+Serial device (e.g. /dev/ttyUSB0).  Cannot be used with \-v.
+.TP
+.BI \-v " port"
+Virtual RS232 via TCP (ip232 mode).  Cannot be used with \-d.
+.TP
+.BI \-s " speed"
+Serial port speed (default: 38400).
+.TP
+.BI \-S " speed"
+Speed reported in CONNECT message (defaults to \-s value).
+.TP
+.B \-I
+Invert DCD pin.
+.TP
+.BI \-i " string"
+Modem init string (omit AT prefix).
+.SS "Network"
+.TP
+.BI \-p " port"
+TCP listen port or address:port (default: 6400).
+.TP
+.BI \-n " number=address"
+Phone book entry (e.g. \-n 5551212=bbs.example.com:23).
+.TP
+.BI \-D " address:port"
+Direct connection.  Use \fB:\fP alone for receiver mode.
+.SS "Security / Bot Gate"
+.TP
+.B \-x
+Require client to press BACKSPACE twice within timeout before allowing
+connection.  Accepts 0x08, 0x14, 0x7F variants (PETSCII/ASCII/VT).
+.TP
+.BI \-k " password"
+Require password within timeout.  Input is PETSCII/ASCII normalized and
+case-insensitive.
+.TP
+.BI \-W " seconds"
+Gate timeout in seconds (default: 20, maximum: 300).
+.TP
+.BI \-F " count"
+Number of gate failures before permanent IP block (default: 3).
+.TP
+.BI \-P " file"
+Pre-connect banner file.  Sent immediately after TCP accept, before
+any gate or serial traffic.  Can be PETSCII or ANSI.
+.TP
+.BI \-G " file"
+Access granted screen file.  Sent after successful gate.  If not
+specified, a default green "ACCESS GRANTED" message is shown.
+.TP
+.BI \-E " command"
+External command to execute asynchronously after successful gate.
+Environment variable TCPSER_PEER_IP contains the caller's IP.
+.SS "Event Files"
+.TP
+.BI \-a " file"
+Send to serial (local) side upon answer.
+.TP
+.BI \-A " file"
+Send to TCP (remote) side upon answer.
+.TP
+.BI \-c " file"
+Send to serial (local) side upon connect.
+.TP
+.BI \-C " file"
+Send to TCP (remote) side upon connect.
+.TP
+.BI \-N " file"
+Send to TCP when no answer (after 10 rings).
+.TP
+.BI \-B " file"
+Send to TCP when all modems are busy.
+.TP
+.BI \-T " file"
+Send to TCP upon inactivity timeout.
+.SS "Logging"
+.TP
+.BI \-l " level"
+Log level: 0 (NONE), 1 (FATAL), 2 (ERROR), 3 (WARN), 4 (INFO),
+5 (DEBUG), 6 (ENTER_EXIT), 7 (TRACE).  Default: 0.
+.TP
+.BI \-L " file"
+Log to file (default: stderr).
+.TP
+.BI \-t " flags"
+Trace flags (can be combined): m=modem in, M=modem out,
+s=serial in, S=serial out, i=IP in, I=IP out.
+.TP
+.BI \-O " file"
+Connection log in CSV format (timestamp,ip,result,duration,bytes_in,bytes_out).
+The file is created with owner-only permissions (0600) as it records caller
+IP addresses.
+.TP
+.BI \-Y " file"
+Statistics file.  When set, connection counters are auto-saved every 60
+seconds and on shutdown, and restored on startup.  Without \-Y, statistics
+are not persisted.
+.SS "Recovery / Limits"
+.TP
+.BI \-w " seconds"
+BBS watchdog timeout (default: 120, 0 = off, maximum: 600).  If no serial
+data arrives from the BBS within this many seconds after a caller
+disconnects, tcpser toggles DTR/DCD (and ultimately sends a BREAK) to force
+the BBS to notice carrier loss.
+.TP
+.BI \-m " minutes"
+Maximum session time in minutes (default: 0 = unlimited).  Disconnects a
+caller after this many minutes to prevent line hogging.
+.SS "Monitoring / Notifications"
+.TP
+.B \-M
+Live full-screen ASCII traffic monitor on stderr (colour).  Distinct from
+\fB\-t M\fP, which only enables modem-output tracing.
+.TP
+.BI \-H " port"
+Start the HTTP web dashboard and Prometheus \fB/metrics\fP endpoint on the
+given port.  Binds to 127.0.0.1 by default; set \fBTCPSER_DASH_BIND\fP to
+change the bind address and \fBTCPSER_DASH_TOKEN\fP to require a
+\fB?token=\fP value on every request.
+.TP
+.BI \-e " url"
+Webhook URL notified on CONNECTED, DISCONNECTED, GATE_FAIL and IP_BLOCKED
+events (Discord/Slack/ntfy/generic JSON POST).  May be repeated for multiple
+targets.  Requires the \fBcurl\fP binary on PATH.
+.SS "Tools"
+.TP
+.B \-Z
+RS232 analyzer mode.  Interactive diagnostic that probes control line
+wiring, sweeps 90 combinations of baud rate, flow control, and parity,
+detects the cartridge type (SwiftLink, Turbo232, GLINK232, userport),
+and recommends the correct tcpser flags.  Requires \-d.
+.TP
+.B \-V
+Print version and exit.
+.TP
+.B \-h
+Show help summary and exit.
+.SH NOTES
+Options \-d/\-v can be repeated for multi-line BBS configurations.
+Options \-s, \-S, \-i, and gate settings propagate to subsequent modems.
+.PP
+DCD defaults to always-asserted (equivalent to AT&C0) because all
+6551 ACIA-based cartridges (SwiftLink, Turbo232, GLINK232) disable
+their receiver when DCD is inactive.
+.SH EXAMPLES
+Basic BBS hosting:
+.PP
+.nf
+tcpser -d /dev/ttyUSB0 -s 2400 -p 6400 -x
+.fi
+.PP
+With password gate and custom screens:
+.PP
+.nf
+tcpser -d /dev/ttyUSB0 -s 2400 -p 6400 -k "secret" \\
+  -P data/prelogin.seq -G data/accessgranted.seq
+.fi
+.PP
+Analyzer mode:
+.PP
+.nf
+tcpser -d /dev/ttyUSB0 -s 2400 -Z
+.fi
+.SH FILES
+.TP
+.I data/tcpser.blocklist
+Default persistent IP blocklist.  Override with TCPSER_BLOCKLIST
+environment variable.
+.TP
+.I data/tcpser.allowlist
+Trusted IPs that skip the blocklist, rate limiter and gate.  Override
+with TCPSER_ALLOWLIST.
+.TP
+.I data/*.seq
+PETSCII screen files for pre-connect banner, access granted, busy,
+and backspace gate screens.
+.SH ENVIRONMENT
+.TP
+.B TCPSER_BLOCKLIST
+Path to the persistent IP blocklist file.
+.TP
+.B TCPSER_ALLOWLIST
+Path to the IP allowlist file.
+.TP
+.B TCPSER_DASH_BIND
+Bind address for the \fB\-H\fP web dashboard (default 127.0.0.1).  Set to
+0.0.0.0 to expose it on all interfaces.
+.TP
+.B TCPSER_DASH_TOKEN
+If set, the \fB\-H\fP web dashboard requires \fB?token=<value>\fP on every
+request (constant-time comparison).
+.TP
+.B TCPSER_PEER_IP
+Set by tcpser in the environment of the \fB\-E\fP gate-success script; holds
+the caller's IP address.
+.SH AUTHOR
+Original tcpser by Jim Brain <brain@jbrain.com>.
+.br
+ip232 support by Anthony Tolle <atolle@gcns.com>.
+.br
+Security hardening and analyzer by GENESiS-PROJECT.

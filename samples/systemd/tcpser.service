@@ -1,0 +1,52 @@
+[Unit]
+Description=TCPSER TCP-to-Serial Bridge
+After=network.target
+Documentation=man:tcpser(1)
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/tcpser -d /dev/ttyUSB0 -s 2400 -p 6400 -x -w 8080 \
+  -P /usr/local/tcpser/scripts/prelogin.seq \
+  -G /usr/local/tcpser/scripts/accessgranted.seq \
+  -O /var/log/tcpser/connections.csv \
+  -E /usr/local/tcpser/scripts \
+  -B /usr/local/share/tcpser/tcpser.blocklist
+ExecReload=/bin/kill -HUP $MAINPID
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=30
+Restart=always
+RestartSec=5
+User=tcpser
+Group=tcpser
+
+# Security hardening
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RemoveIPC=yes
+PrivateTmp=yes
+PrivateDevices=no
+DeviceAllow=/dev/ttyUSB0 rw
+DeviceAllow=/dev/null rw
+DevicePolicy=closed
+ReadWritePaths=/var/log/tcpser
+ReadOnlyPaths=/usr/local/share/tcpser
+ReadOnlyPaths=/usr/local/tcpser/scripts
+SystemCallFilter=@system-service
+SystemCallFilter=~@debug @mount @module @obsolete @reboot @swap
+SystemCallErrorNumber=EPERM
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictNamespaces=yes
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+SeccompArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

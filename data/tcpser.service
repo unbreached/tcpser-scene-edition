@@ -1,0 +1,27 @@
+[Unit]
+Description=TCPSER - Hayes Modem Emulator over TCP/IP
+Documentation=man:tcpser(1)
+After=network.target
+
+[Service]
+Type=simple
+
+# Edit these to match your setup:
+ExecStart=/usr/local/bin/tcpser -d /dev/ttyUSB0 -s 2400 -p 6400 -l 4 -L /var/log/tcpser.log -x
+ExecReload=/bin/kill -HUP $MAINPID
+
+Restart=on-failure
+RestartSec=5
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/log/tcpser.log
+ReadWritePaths=/usr/local/share/tcpser/tcpser.blocklist
+
+# Allow access to serial devices
+SupplementaryGroups=dialout
+
+[Install]
+WantedBy=multi-user.target

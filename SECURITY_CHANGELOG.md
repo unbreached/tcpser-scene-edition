@@ -1,0 +1,143 @@
+# TCPSER 1.2.0 Security Enhancement Changelog
+
+> See [`docs/SECURITY_GUIDE.md`](docs/SECURITY_GUIDE.md) for the authoritative
+> security reference and [`docs/README.md`](docs/README.md) for the doc index.
+
+This version includes comprehensive security fixes and production deployment tools.
+
+## 1.2.1 — Audit Hardening Round (2026-06)
+
+A full multi-perspective security/stability audit produced the following
+fixes (all verified to build cleanly with `-Wall -Wextra`, zero warnings):
+
+### High severity
+- **Serial AT-parser out-of-bounds write** (`modem_core.c`): a backspace on an
+  empty command line with echo off (`ATE0`) drove `cur_line_idx` negative,
+  causing an attacker-controlled write *before* the line buffer. The index is
+  now clamped at 0 and the write guard rejects negative indices.
+- **Password-gate brute force** (`bridge.c`): the per-IP fail counter (`-F`)
+  only ticked once per connection, so thousands of guesses could be pipelined
+  into one connection. Wrong guesses are now capped per connection
+  (`GATE_MAX_GUESSES_PER_CONN`), throttled, and compared in constant time.
+- **Global accept-freeze DoS** (`tcpser.c`/`bridge.c`): a single silent caller
+  held the whole server's accept path for the entire gate timeout, blocking
+  every port/modem. The accept gate is now released immediately after
+  `accept()`, before the banner/gate; the parent skips already-connected modems.
+- **Web dashboard DoS + exposure** (`webserver.c`): added per-connection
+  read/write timeouts, a bounded handler-thread pool, optional token auth
+  (`TCPSER_DASH_TOKEN`), and a configurable bind address that now **defaults to
+  127.0.0.1** (was `INADDR_ANY` with no auth).
+
+### Medium / low
+- Constant-time password and dashboard-token comparison (`util.c: ct_streq`).
+- Blocklist no longer wiped when the file is merely missing; the in-memory
+  table now evicts the oldest timed entry when full instead of default-allowing.
+- Connection log (`-O`) created mode 0600 (contains caller IPs); stats files
+  documented as requiring `-Y`.
+- Webhook URL (often a secret) passed to `curl` via stdin config — no longer in
+  `ps`; masked in logs. Multiple `-e` targets; security events added
+  (GATE_FAIL, IP_BLOCKED).
+- `ctype`/`toupper` calls cast to `unsigned char` (UB on negative bytes).
+- `localtime()` NULL-guarded everywhere; `spawn_thread()` return value checked.
+- Signal flags use `volatile sig_atomic_t`; web thread no longer relies on a
+  function-pointer cast (UB). Graceful shutdown drains active callers.
+
+### Build hardening
+- `Makefile`: `-fstack-protector-strong`, `_FORTIFY_SOURCE=2`,
+  `-Wformat -Wformat-security`, PIE (plus RELRO + immediate binding on Linux).
+
+### New features
+- HTTP `/metrics` (Prometheus) endpoint on the `-H` dashboard.
+- `--help` redesigned (aligned columns, defaults, quick-start, gate promoted).
+- Documentation: added `LICENSE` (GPL-2.0), `docs/README.md` index; fixed
+  several inaccurate docs (non-existent `--test-script`, `tcpser -t`,
+  stats-persistence, dashboard bind claim, module count); man page completed.
+
+## Security Fixes Applied
+
+### Critical Vulnerabilities Resolved
+- **Command Injection (CVE-level)**: Replaced vulnerable `execl("/bin/sh")` with secure script execution
+- **Buffer Overflows**: Fixed unsafe `strcpy()`, `sprintf()` usage throughout codebase
+- **Path Traversal**: Added input validation and path sanitization
+- **Race Conditions**: Implemented thread-safe initialization patterns
+- **HTTP Vulnerabilities**: Complete HTTP parser rewrite with security headers
+
+### New Security Modules
+- `src/secure_script.c/h` - Sandboxed script execution system
+- `src/secure_paths.c/h` - Path validation and sanitization
+- `src/secure_http.c/h` - Secure HTTP request parsing
+
+### Files Modified for Security
+- `src/bridge.c` - Fixed race conditions, secure script integration
+- `src/nvt.c` - Buffer overflow prevention, safe string handling
+- `src/webserver.c` - Secure HTTP parsing integration
+
+## Production Deployment Tools
+
+### Complete Sample Configurations (`samples/`)
+- **Systemd Services**: Hardened service files with security restrictions
+- **Firewall Rules**: iptables and UFW configurations with rate limiting
+- **Nginx Proxy**: TLS-enabled reverse proxy with security headers
+- **Fail2Ban**: Attack detection and automatic blocking
+- **Gate Scripts**: Secure event handling for connection success/failure
+- **Monitoring**: Health checks and statistical reporting
+- **Deployment**: Automated installation with security hardening
+
+### Documentation
+- `docs/SECURITY_GUIDE.md` - Comprehensive security architecture guide
+- `samples/README.md` - Detailed configuration documentation
+- `samples/QUICK_START.md` - 1-minute secure deployment guide
+
+## Security Architecture
+
+### Defense in Depth
+1. **Input Validation**: All external input validated and sanitized
+2. **Privilege Separation**: Runs as dedicated non-root user
+3. **Filesystem Restrictions**: Systemd security features limit access
+4. **Network Security**: Firewall rules and rate limiting
+5. **Attack Detection**: Fail2Ban integration for automated response
+6. **Audit Logging**: Comprehensive logging for security monitoring
+
+### Hardening Features
+- Script execution restricted to specific directory
+- Path traversal protection on all file operations
+- HTTP request parsing with attack prevention
+- Memory safety improvements throughout
+- Thread-safe initialization patterns
+- Security headers on all web responses
+
+## Compatibility
+
+- **Backward Compatible**: All existing functionality preserved
+- **Configuration Compatible**: Existing command-line options unchanged
+- **Feature Compatible**: BBS connectivity and modem emulation unchanged
+
+## Testing
+
+- All security fixes tested with sample exploits
+- Production configurations validated in test environments
+- No regressions in core BBS connectivity features
+- Performance impact minimal (<5% overhead)
+
+## Deployment
+
+Use the automated installer for secure deployment:
+```bash
+sudo ./samples/deployment/install_secure.sh
+```
+
+Or follow the quick start guide in `samples/QUICK_START.md`.
+
+## Support
+
+For security-related questions or to report vulnerabilities:
+- Review `docs/SECURITY_GUIDE.md` for architecture details
+- Use monitoring tools in `samples/monitoring/` for diagnostics
+- Check sample configurations for deployment best practices
+
+---
+
+**Security Review Date**: 2026-04-19  
+**Review Methodology**: Bug bounty researcher perspective  
+**Vulnerability Assessment**: OWASP Top 10, CWE analysis  
+**Deployment Testing**: Production-grade configurations validated

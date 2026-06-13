@@ -1,0 +1,13 @@
+# Build artifacts
+tcpser
+src/*.o
+*.bak
+*~
+core
+
+# macOS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/

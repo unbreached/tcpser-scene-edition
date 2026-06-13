@@ -1,0 +1,19 @@
+[Unit]
+Description=TCPSER TCP-to-Serial Bridge (Basic Configuration)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/tcpser -d /dev/ttyUSB0 -s 2400 -p 6400
+User=tcpser
+Group=tcpser
+Restart=always
+RestartSec=5
+
+# Basic security
+NoNewPrivileges=yes
+ProtectSystem=yes
+ProtectHome=yes
+
+[Install]
+WantedBy=multi-user.target
