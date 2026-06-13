@@ -1088,7 +1088,7 @@ void *bridge_task(void *arg) {
 
   /* Give dashboard access to modem config for interactive commands */
   dashboard_set_serial_fd(cfg->dce_data.fd);
-  g_dash.modem_cfg = (void *)cfg;
+  dashboard_set_modem_cfg((void *)cfg);
 
   spawn_thread((void *)ctrl_thread, (void *)cfg, "CTRL");
   spawn_thread((void *)ip_thread, (void *)cfg, "IP");

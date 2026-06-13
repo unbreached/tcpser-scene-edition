@@ -69,6 +69,9 @@ extern dashboard_state_t g_dash;
 
 void dashboard_init(const char *tty, int speed, int port, int modem_count);
 void dashboard_set_serial_fd(int fd);
+void dashboard_set_modem_cfg(void *cfg);
+void dashboard_lock(void);
+void dashboard_unlock(void);
 void dashboard_event(int type, unsigned char *data, int len);
 void dashboard_set_connected(int connected, const char *peer_ip);
 void dashboard_set_lines(int dcd, int dsr);

@@ -546,7 +546,22 @@ void dashboard_init(const char *tty, int speed, int port, int modem_count) {
   render();
 }
 
-void dashboard_set_serial_fd(int fd) { g_dash.serial_fd = fd; }
+/* Expose the dashboard mutex so other readers of g_dash (e.g. the web
+ * dashboard threads) can take a consistent snapshot. */
+void dashboard_lock(void) { pthread_mutex_lock(&dash_mutex); }
+void dashboard_unlock(void) { pthread_mutex_unlock(&dash_mutex); }
+
+void dashboard_set_serial_fd(int fd) {
+  pthread_mutex_lock(&dash_mutex);
+  g_dash.serial_fd = fd;
+  pthread_mutex_unlock(&dash_mutex);
+}
+
+void dashboard_set_modem_cfg(void *cfg) {
+  pthread_mutex_lock(&dash_mutex);
+  g_dash.modem_cfg = cfg;
+  pthread_mutex_unlock(&dash_mutex);
+}
 
 void dashboard_event(int type, unsigned char *data, int len) {
   if(!g_dash.enabled || len == 0) return;

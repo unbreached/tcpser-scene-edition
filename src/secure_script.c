@@ -9,6 +9,9 @@
  * - Execution timeout protection
  */
 
+/* Needed for fexecve() on glibc/musl (and keeps usleep visible). */
+#define _GNU_SOURCE
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -18,9 +21,12 @@
 #include <signal.h>
 #include <errno.h>
 #include <ctype.h>
+#include <fcntl.h>
 
 #include "secure_script.h"
 #include "debug.h"
+
+extern char **environ;
 
 /**
  * Validate script name - only allow safe characters
@@ -61,8 +67,15 @@ int validate_script_name(const char *script_name) {
 int validate_script_file(const char *script_path) {
     struct stat st;
 
-    if (stat(script_path, &st) != 0) {
+    /* lstat (not stat) so a symlinked script is detected rather than followed. */
+    if (lstat(script_path, &st) != 0) {
         LOG(LOG_DEBUG, "Script not found: %s", script_path);
+        return 0;
+    }
+
+    /* Reject symlinks outright — they are a path-substitution (TOCTOU) vector. */
+    if (S_ISLNK(st.st_mode)) {
+        LOG(LOG_ERROR, "Script is a symlink (refused): %s", script_path);
         return 0;
     }
 
@@ -142,8 +155,32 @@ int execute_script_secure(const char *script_name, const char *peer_ip, int time
             LOG(LOG_ERROR, "setsid failed: %s", strerror(errno));
         }
 
-        /* Execute script directly (no shell) */
-        execl(script_path, script_name, (char *)NULL);
+        /* Re-open the script with O_NOFOLLOW (reject a symlink swapped in after
+         * validation) and re-verify the descriptor, closing the TOCTOU window
+         * between validate_script_file() and exec. */
+        int sfd = open(script_path, O_RDONLY | O_NOFOLLOW);
+        if (sfd < 0) {
+            LOG(LOG_ERROR, "Failed to open script %s: %s", script_path, strerror(errno));
+            _exit(127);
+        }
+        struct stat fst;
+        if (fstat(sfd, &fst) != 0 || !S_ISREG(fst.st_mode) ||
+            !(fst.st_mode & S_IXUSR) || (fst.st_mode & S_IWOTH)) {
+            LOG(LOG_ERROR, "Script failed descriptor re-validation: %s", script_path);
+            _exit(127);
+        }
+
+        char *const script_argv[] = { (char *)script_name, (char *)NULL };
+#if defined(__linux__)
+        /* Execute the exact descriptor we validated — symlink/TOCTOU-proof.
+         * Declared defensively so the build never depends on feature-macro
+         * ordering (compatible redeclaration of the libc prototype). */
+        extern int fexecve(int, char *const[], char *const[]);
+        fexecve(sfd, script_argv, environ);
+#endif
+        /* Portable fallback (and if fexecve is unavailable / returns): the
+         * O_NOFOLLOW open + fstat above already rejected a symlinked target. */
+        execv(script_path, script_argv);
 
         /* If we get here, exec failed */
         LOG(LOG_ERROR, "Failed to execute script %s: %s", script_path, strerror(errno));

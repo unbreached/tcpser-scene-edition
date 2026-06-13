@@ -152,6 +152,7 @@ static const char *dashboard_html =
 /* Generate JSON status */
 static void get_status_json(char *buffer, size_t size) {
   extern dashboard_state_t g_dash;
+  dashboard_lock();
   time_t now = time(NULL);
   long uptime = (long)(now - g_dash.start_time);
 
@@ -190,11 +191,13 @@ static void get_status_json(char *buffer, size_t size) {
   }
 
   strncat(buffer, "\n  ]\n}", size - strlen(buffer) - 1);
+  dashboard_unlock();
 }
 
 /* Generate Prometheus/OpenMetrics text exposition */
 static void get_metrics_text(char *buffer, size_t size) {
   extern dashboard_state_t g_dash;
+  dashboard_lock();
   time_t now = time(NULL);
   long uptime = (long)(now - g_dash.start_time);
 
@@ -227,6 +230,7 @@ static void get_metrics_text(char *buffer, size_t size) {
     g_dash.gate_fail, g_dash.bytes_in, g_dash.bytes_out,
     uptime, g_dash.connected ? 1 : 0
   );
+  dashboard_unlock();
 }
 
 /* Extract a query-string parameter value (e.g. token) into out. */

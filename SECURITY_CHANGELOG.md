@@ -5,6 +5,28 @@
 
 This version includes comprehensive security fixes and production deployment tools.
 
+## 1.2.3 — Final audit cleanup (2026-06)
+
+Closed the last remaining audit items so nothing is left open:
+
+- **`secure_script` TOCTOU / symlink** — `validate_script_file()` now uses
+  `lstat` and rejects symlinks; the child re-opens the script with
+  `O_NOFOLLOW`, re-verifies the descriptor (regular, executable, not
+  world-writable), and executes that descriptor via `fexecve` on Linux
+  (symlink/TOCTOU-proof), falling back to `execv` of the `O_NOFOLLOW`-verified
+  path elsewhere.
+- **Web dashboard `g_dash` data race** — the dashboard already had an internal
+  mutex; the web-dashboard reader threads (`/api/status`, `/api/events`,
+  `/metrics`) now take that same lock (`dashboard_lock()`/`_unlock()`) for a
+  consistent snapshot. `serial_fd`/`modem_cfg` startup writes also go through
+  locked setters now.
+- **Dead `get_safe_config_path()` removed** — the unused stronger validator
+  (whose hardcoded directory allowlist did not match the project's default
+  paths) was removed; env-supplied blocklist/allowlist paths continue to be
+  validated by `validate_file_path()` (canonicalized + traversal-checked).
+
+This resolves every confirmed finding from the audit (high, medium, and low).
+
 ## 1.2.2 — Security follow-up (2026-06)
 
 Closed the remaining low-severity, operator-side exposures from the audit:

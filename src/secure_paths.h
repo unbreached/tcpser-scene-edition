@@ -16,14 +16,6 @@
 int validate_file_path(const char *path, char *sanitized, size_t sanitized_size);
 
 /**
- * Get a safe configuration file path from environment or default
- * @param env_var - Environment variable name
- * @param default_path - Default path if env var not set or invalid
- * @return Safe path (statically allocated)
- */
-const char *get_safe_config_path(const char *env_var, const char *default_path);
-
-/**
  * Check if a path contains directory traversal sequences
  * @param path - Path to check
  * @return 1 if path contains traversal, 0 if safe

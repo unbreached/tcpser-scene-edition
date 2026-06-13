@@ -76,3 +76,11 @@
   SECURITY: statistics file (-Y) created mode 0600 (it persists caller IPs)
   SECURITY: webhook child resets PATH before exec so an inherited/hijacked PATH
             cannot substitute a malicious curl
+1.2.3 (final audit cleanup — no findings left open)
+  SECURITY: secure_script rejects symlinks (lstat) and execs via O_NOFOLLOW +
+            fexecve (Linux) / execv, closing the validate->exec TOCTOU window
+  SECURITY: web dashboard reader threads take the dashboard mutex for a
+            consistent g_dash snapshot (data race closed); serial_fd/modem_cfg
+            set through locked setters
+  CLEANUP:  removed unused get_safe_config_path() (env paths still validated by
+            validate_file_path: canonicalized + traversal-checked)
