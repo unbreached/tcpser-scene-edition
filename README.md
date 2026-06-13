@@ -1,4 +1,4 @@
-# TCPSER 1.2.1 - ELiTE RETRO BBS EDiTiON
+# TCPSER 1.2.2 - ELiTE RETRO BBS EDiTiON
 
 **GENESiS-PROJECT // HARDENED TCPSER FOR FRoZEN FLoPPY BBS**
 
@@ -107,7 +107,7 @@ Run `tcpser -h` for the full option list, grouped by category.
 | Flag | Description |
 |------|-------------|
 | `-x` | Require BACKSPACE x2 before connect |
-| `-k <password>` | Require password before connect |
+| `-k <password>` | Require password before connect (`-k env:VAR` reads it from `$VAR`, hidden from `ps`) |
 | `-W <seconds>` | Gate timeout (default: 20, max: 300) |
 | `-F <count>` | Failures before permanent block (default: 3) |
 | `-P <file|dir>` | Pre-connect banner (file or directory for rotation) |

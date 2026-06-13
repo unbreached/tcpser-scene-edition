@@ -46,6 +46,7 @@ void print_help(char* name) {
   fprintf(stderr,
 "  SECURITY / BOT GATE   (recommended for any public BBS)\n"
 "    -k PASSWORD       require password to connect\n"
+"                      (use -k env:VAR to read it from $VAR, hidden from ps)\n"
 "    -x                require BACKSPACE x2 to connect\n"
 "    -W SECONDS        gate timeout                   [20, max 300]\n"
 "    -F COUNT          fails before permanent block   [3, range 1..100]\n"
@@ -194,7 +195,20 @@ int init(int argc,
         break;
       case 'k':
         cfg[i].gate_mode = 2; // password
-        safe_strncpy(cfg[i].gate_password, optarg, sizeof(cfg[i].gate_password));
+        /* "-k env:VARNAME" reads the password from environment variable VARNAME
+         * so the secret never appears in the process table (ps). A literal
+         * "-k password" still works for convenience but is visible in ps. */
+        if(strncmp(optarg, "env:", 4) == 0) {
+          const char *v = getenv(optarg + 4);
+          if(v && v[0]) {
+            safe_strncpy(cfg[i].gate_password, v, sizeof(cfg[i].gate_password));
+          } else {
+            fprintf(stderr, "Error: -k env:%s but that environment variable is unset or empty\n", optarg + 4);
+            exit(1);
+          }
+        } else {
+          safe_strncpy(cfg[i].gate_password, optarg, sizeof(cfg[i].gate_password));
+        }
         break;
       case 'W':
         cfg[i].gate_timeout = atoi(optarg);

@@ -1,5 +1,5 @@
 .\"                                      Hey, EMACS: -*- nroff -*-
-.TH TCPSER 1 "June 2026" "tcpser 1.2.1"
+.TH TCPSER 1 "June 2026" "tcpser 1.2.2"
 .SH NAME
 tcpser \- Hayes compatible modem emulator over TCP/IP
 .SH SYNOPSIS
@@ -59,7 +59,9 @@ connection.  Accepts 0x08, 0x14, 0x7F variants (PETSCII/ASCII/VT).
 .TP
 .BI \-k " password"
 Require password within timeout.  Input is PETSCII/ASCII normalized and
-case-insensitive.
+case-insensitive.  Use \fB\-k env:VARNAME\fP to read the password from the
+named environment variable instead of the command line, keeping it out of
+the process table (\fBps\fP).
 .TP
 .BI \-W " seconds"
 Gate timeout in seconds (default: 20, maximum: 300).

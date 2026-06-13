@@ -73,6 +73,9 @@ static void fire_one(const char *url, const char *payload) {
       dup2(dn, 2);
       if(dn > 2) close(dn);
     }
+    /* Reset PATH to trusted system locations so a hijacked/inherited PATH can't
+     * make us exec a malicious 'curl'. */
+    setenv("PATH", "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin", 1);
     /* Payload is not secret (event + IP), so -d on argv is fine; the URL is
      * supplied via the -K - config read from stdin and never appears in ps. */
     execlp("curl", "curl", "-s", "-K", "-", "-X", "POST",

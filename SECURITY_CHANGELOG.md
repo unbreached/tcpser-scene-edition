@@ -5,6 +5,19 @@
 
 This version includes comprehensive security fixes and production deployment tools.
 
+## 1.2.2 — Security follow-up (2026-06)
+
+Closed the remaining low-severity, operator-side exposures from the audit:
+
+- **Gate password out of `ps`** — `-k env:VARNAME` reads the password from an
+  environment variable instead of the command line.
+- **Stats file (`-Y`) created mode 0600** — it persists caller IP history (PII).
+- **Webhook `curl` PATH** — the child resets `PATH` to trusted system
+  directories before exec so a hijacked `PATH` can't substitute a rogue `curl`.
+
+Deferred (separate follow-up): `secure_script` validate→exec TOCTOU hardening
+and lock-protected `g_dash` reads in the web dashboard.
+
 ## 1.2.1 — Audit Hardening Round (2026-06)
 
 A full multi-perspective security/stability audit produced the following

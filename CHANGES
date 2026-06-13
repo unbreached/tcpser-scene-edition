@@ -70,3 +70,9 @@
             events, graceful shutdown drain
   Quality: removed dead code, consolidated shared helpers into util.c, redesigned
            --help, added LICENSE + docs index, fixed inaccurate docs and man page
+1.2.2 (security follow-up)
+  SECURITY: -k env:VAR reads the gate password from an environment variable so
+            it is no longer exposed in the process table (ps)
+  SECURITY: statistics file (-Y) created mode 0600 (it persists caller IPs)
+  SECURITY: webhook child resets PATH before exec so an inherited/hijacked PATH
+            cannot substitute a malicious curl

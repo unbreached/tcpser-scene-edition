@@ -18,6 +18,7 @@
 #include <termios.h>
 #include <pthread.h>
 #include <sys/ioctl.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include "dashboard.h"
@@ -754,6 +755,9 @@ void dashboard_save_stats(const char *path) {
   if(!path || !path[0]) return;
   f = fopen(path, "w");
   if(!f) return;
+  /* The persisted history includes caller IP addresses (PII), so keep the
+   * stats file owner-only regardless of umask. */
+  (void)chmod(path, S_IRUSR | S_IWUSR);
   fprintf(f, "# TCPSER statistics (auto-saved)\n");
   fprintf(f, "connections=%lu\n", g_dash.total_connections);
   fprintf(f, "blocked=%lu\n", g_dash.blocked);
