@@ -5,6 +5,28 @@
 
 This version includes comprehensive security fixes and production deployment tools.
 
+## 1.2.4 — Crash fixes (2026-07)
+
+Two memory-safety crashes found while investigating a reproducible segfault
+that occurred when the modem answered an incoming call (`ATA`):
+
+- **Stack buffer overflow in `ip_thread`** (`bridge.c`) — the socket read used
+  `line_read(..., sizeof(buf))` on `unsigned char buf[258]`, so a `recv()`
+  returning the full 258 bytes made the following `buf[res] = 0` write to
+  `buf[258]`, one byte past the buffer. The IP thread only reads the socket
+  once the modem is off-hook, so this fired the instant a call was answered
+  while the peer (e.g. CGTerm) had ≥ 258 bytes buffered — surfacing as a
+  segfault mid-answer, in a different thread from the answer logic. Now reads
+  at most `sizeof(buf) - 1`, matching the adjacent IPC-pipe read. Confirmed
+  with AddressSanitizer (before: `stack-buffer-overflow ... ip_thread
+  bridge.c:972`; after: clean).
+- **NULL-pointer dereference in `ip_connect`** (`ip.c`) — a colon-only or empty
+  dial string (`ATD:`, `ATDT:`) or empty phone-book entry made
+  `strtok(ip, ":")` return `NULL`, which was passed directly to
+  `gethostbyname()` / `inet_aton()` and crashed. Added an early NULL guard.
+  Confirmed with AddressSanitizer (before: `SEGV ... _inet_aton_check`;
+  after: clean).
+
 ## 1.2.3 — Final audit cleanup (2026-06)
 
 Closed the last remaining audit items so nothing is left open:

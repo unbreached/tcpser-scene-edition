@@ -961,7 +961,12 @@ void *ip_thread(void *arg) {
       // we got data
       if (cfg->line_data.is_connected == TRUE && FD_ISSET(cfg->line_data.fd, &readfs)) {  // socket
         LOG(LOG_DEBUG, "Data available on socket");
-        res = line_read(&cfg->line_data, buf, sizeof(buf));
+        /* Read at most sizeof(buf)-1 so the NUL terminator written below
+         * (buf[res] = 0) always lands inside the buffer. Reading the full
+         * sizeof(buf) let a 258-byte recv() make buf[258] a 1-byte stack
+         * overflow — this fires exactly when a client (e.g. CGTerm) has
+         * >= 258 bytes buffered at answer time. */
+        res = line_read(&cfg->line_data, buf, sizeof(buf) - 1);
         //res = recv(cfg->line_data.fd, buf, sizeof(buf), 0);
         if(0 >= res) {
           LOG(LOG_INFO, "No socket data read, assume closed peer");

@@ -112,8 +112,14 @@ int ip_connect(char *ip) {
   char *tmp;
 
   LOG_ENTER();
-  // TODO Can ip be null? If so, fix.
   address = strtok(ip, ":");
+  /* strtok() returns NULL for a NULL, empty, or colon-only address (e.g. the
+   * dial string "ATD:" or an empty phone-book entry). Passing that NULL on to
+   * gethostbyname()/inet_aton() dereferences it and crashes, so bail early. */
+  if(address == NULL) {
+    LOG(LOG_ERROR, "No host address to connect to");
+    return -1;
+  }
   tmp = strtok(NULL, ":");
   if(tmp != NULL && strlen(tmp) > 0) {
     port = atoi(tmp);

@@ -84,3 +84,12 @@
             set through locked setters
   CLEANUP:  removed unused get_safe_config_path() (env paths still validated by
             validate_file_path: canonicalized + traversal-checked)
+1.2.4 (crash fixes — segfault on answer)
+  SECURITY: fixed 1-byte stack buffer overflow in ip_thread (bridge.c): the
+            socket read used the full sizeof(buf) so a 258-byte recv() made the
+            trailing "buf[res] = 0" write one past buf[258]. Triggered right
+            after ATA/answer when a client (e.g. CGTerm) had >= 258 bytes
+            buffered — presented as a segfault mid-answer. Now reads sizeof-1.
+  SECURITY: fixed NULL-pointer dereference in ip_connect (ip.c): a colon-only or
+            empty dial/phone-book address made strtok() return NULL, which was
+            passed straight to gethostbyname()/inet_aton(). Added a NULL guard.
