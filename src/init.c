@@ -11,6 +11,7 @@
 #include "dashboard.h"
 #include "webserver.h"
 #include "util.h"
+#include "serial.h"
 
 void print_help(char* name) {
   fprintf(stderr,
@@ -35,6 +36,8 @@ void print_help(char* name) {
 "    -S SPEED          speed reported in CONNECT       [= -s]\n"
 "    -i STRING         modem init string (no AT prefix)\n"
 "    -I                invert DCD pin\n"
+"    -b LIST           on-connect caller speed menu (CBase POKE 838); LIST is\n"
+"                      speed=pokeval pairs, e.g. -b 2400=6,9600=8,38400=10\n"
 "\n"
 "  NETWORK\n"
 "    -p PORT[:MODEMS]  TCP listen port                [6400, all modems]\n"
@@ -128,7 +131,7 @@ int init(int argc,
   cfg[0].line_speed = 38400;
 
   while(opt>-1 && i < max_modem) {
-    opt=getopt(argc, argv, "p:s:S:d:v:hw:i:Il:L:t:n:a:A:c:C:N:B:T:P:G:E:k:xD:VZF:MO:m:e:Y:W:H:");
+    opt=getopt(argc, argv, "p:s:S:d:v:hw:i:Il:L:t:n:a:A:c:C:N:B:T:P:G:E:k:xD:VZF:MO:m:e:Y:W:H:b:");
     switch(opt) {
       case 't':
         trace_flags = log_get_trace_flags();
@@ -247,6 +250,36 @@ int init(int argc,
       case 'I':
         cfg[i].invert_dcd = TRUE;
         break;
+      case 'b':
+        /* -b speed=poke838val[,speed=poke838val...] : on-connect caller baud menu.
+         * Each pair defines a selectable serial speed and the value CBase's
+         * "POKE 838,<val>" needs to switch to it. Order = menu order. */
+        {
+          char list[256];
+          safe_strncpy(list, optarg, sizeof(list));
+          cfg[i].baud_menu_count = 0;
+          char *pair = strtok(list, ",");
+          while(pair && cfg[i].baud_menu_count < BAUD_MENU_MAX) {
+            char *eq = strchr(pair, '=');
+            if(eq) {
+              *eq = 0;
+              int sp = atoi(pair);
+              int pv = atoi(eq + 1);
+              if(sp > 0 && ser_get_bps_const(sp) >= 0) {
+                cfg[i].baud_menu_speed[cfg[i].baud_menu_count] = sp;
+                cfg[i].baud_menu_poke[cfg[i].baud_menu_count] = pv;
+                cfg[i].baud_menu_count++;
+              } else {
+                fprintf(stderr, "Warning: -b ignoring unsupported speed '%s'\n", pair);
+              }
+            } else {
+              fprintf(stderr, "Warning: -b entry '%s' is not speed=pokeval, ignoring\n", pair);
+            }
+            pair = strtok(NULL, ",");
+          }
+          cfg[i].baud_menu_enabled = (cfg[i].baud_menu_count > 0);
+        }
+        break;
       case 'p':
         /* Parse -p port[:modem_list] */
         if(*port_count >= MAX_PORTS) {
@@ -342,6 +375,12 @@ int init(int argc,
             cfg[i].gate_max_fails = cfg[i - 1].gate_max_fails;
             cfg[i].watchdog_timeout = cfg[i - 1].watchdog_timeout;
             cfg[i].max_session_minutes = cfg[i - 1].max_session_minutes;
+            cfg[i].baud_menu_enabled = cfg[i - 1].baud_menu_enabled;
+            cfg[i].baud_menu_count = cfg[i - 1].baud_menu_count;
+            for(j = 0; j < cfg[i - 1].baud_menu_count; j++) {
+              cfg[i].baud_menu_speed[j] = cfg[i - 1].baud_menu_speed[j];
+              cfg[i].baud_menu_poke[j] = cfg[i - 1].baud_menu_poke[j];
+            }
           } else {
             LOG(LOG_WARN, "Maximum modems defined - ignoring extra");
             break;

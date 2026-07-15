@@ -705,6 +705,105 @@ static void run_gate_success_script(modem_config *cfg) {
       break;
   }
 }
+/* On-connect caller baud selection (-b).
+ * Shows the TCP caller a numbered speed menu; on a valid pick, sends
+ * "POKE 838,<val>" to the C64 (CBase executes it from its input stream) and
+ * retunes tcpser's own serial port to match, so the session runs at that speed.
+ * Best-effort: on timeout, peer close, or invalid input the current speed is
+ * kept. Runs before ringing, while both sides still agree on the old speed. */
+static void baud_select_menu(modem_config *cfg) {
+  int fd = cfg->line_data.fd;
+
+  if(!cfg->baud_menu_enabled || cfg->baud_menu_count <= 0) return;
+
+  /* Build and send the menu over TCP */
+  {
+    char menu[512];
+    int p = 0;
+    p += snprintf(menu + p, sizeof(menu) - p, "\r\nSelect connection speed:\r\n");
+    for(int k = 0; k < cfg->baud_menu_count && p < (int)sizeof(menu) - 40; k++) {
+      p += snprintf(menu + p, sizeof(menu) - p, "  %d) %d baud\r\n",
+                    k + 1, cfg->baud_menu_speed[k]);
+    }
+    snprintf(menu + p, sizeof(menu) - p, "Choice: ");
+    preconnect_write(fd, menu);
+  }
+
+  /* Wait up to 20s for a single-digit selection */
+  int timeout = 20;
+  struct timeval start, now;
+  gettimeofday(&start, NULL);
+  int chosen = -1;
+
+  while(chosen < 0) {
+    gettimeofday(&now, NULL);
+    int remaining = timeout - (int)(now.tv_sec - start.tv_sec);
+    if(remaining <= 0) break;
+
+    fd_set readfs;
+    FD_ZERO(&readfs);
+    FD_SET(fd, &readfs);
+    struct timeval tv;
+    tv.tv_sec = remaining;
+    tv.tv_usec = 0;
+
+    int rc = select(fd + 1, &readfs, NULL, NULL, &tv);
+    if(rc <= 0) break;
+    if(!FD_ISSET(fd, &readfs)) continue;
+
+    unsigned char inbuf[256];
+    int n = ip_read(fd, inbuf, sizeof(inbuf));
+    if(n <= 0) return; /* peer closed — caller is gone */
+
+    unsigned char filtered[256];
+    int m = gate_consume_telnet(inbuf, n, filtered, sizeof(filtered));
+    for(int i = 0; i < m; i++) {
+      unsigned char ch = filtered[i];
+      if(ch >= '1' && ch <= '9') {
+        int idx = ch - '1';
+        if(idx < cfg->baud_menu_count) { chosen = idx; break; }
+      }
+    }
+  }
+
+  if(chosen < 0) {
+    preconnect_write(fd, "\r\nKeeping current speed.\r\n");
+    LOG(LOG_INFO, "Baud menu: no valid selection, keeping %d baud",
+        cfg->dce_data.port_speed);
+    return;
+  }
+
+  int speed = cfg->baud_menu_speed[chosen];
+  int pokeval = cfg->baud_menu_poke[chosen];
+
+  {
+    char confirm[64];
+    snprintf(confirm, sizeof(confirm), "\r\nSetting %d baud...\r\n", speed);
+    preconnect_write(fd, confirm);
+  }
+
+  if(speed == cfg->dce_data.port_speed) {
+    LOG(LOG_INFO, "Baud menu: %d baud already current, no POKE needed", speed);
+  } else {
+    /* Send "POKE 838,<val>" + RETURN to CBase over the serial link at the
+     * CURRENT speed (both sides still agree). PETSCII uppercase letters and
+     * digits share ASCII code points, so the literal ASCII bytes are correct. */
+    char poke[32];
+    int plen = snprintf(poke, sizeof(poke), "POKE 838,%d\r", pokeval);
+    LOG(LOG_INFO, "Baud menu: caller chose %d baud -> sending POKE 838,%d",
+        speed, pokeval);
+    dce_write(&cfg->dce_data, (unsigned char *)poke, plen);
+    /* Give CBase time to receive and execute the POKE (re-init its UART) before
+     * we retune. dce_set_speed uses TCSADRAIN, so the POKE bytes already queued
+     * are flushed at the old speed first, reaching the C64 intact. */
+    usleep(300000);
+    dce_set_speed(&cfg->dce_data, speed);
+  }
+
+  /* Report the negotiated speed in the CONNECT result. */
+  cfg->line_speed = speed;
+}
+
 int accept_connection(modem_config *cfg) {
   LOG_ENTER();
 
@@ -795,6 +894,11 @@ int accept_connection(modem_config *cfg) {
     run_gate_success_script(cfg);
 
 start_ringing:
+    /* On-connect caller baud selection (-b): let the caller choose the
+     * C64<->tcpser link speed before the BBS session starts. No-op unless -b
+     * was given. Both gated and allowlisted callers reach this. */
+    baud_select_menu(cfg);
+
     // 4) Start a short answer timer so scanners don't hold the line forever.
     cfg->incoming_waiting_answer = TRUE;
     cfg->incoming_answer_deadline = time(NULL) + (cfg->incoming_answer_timeout > 0 ? cfg->incoming_answer_timeout : 10);

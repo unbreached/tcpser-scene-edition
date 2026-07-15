@@ -41,6 +41,21 @@ Invert DCD pin.
 .TP
 .BI \-i " string"
 Modem init string (omit AT prefix).
+.TP
+.BI \-b " list"
+On-connect caller speed menu (requires CBase).
+.I list
+is a comma-separated set of
+.IR speed = pokeval
+pairs.  When a caller connects they are shown a menu of the listed speeds; on
+selection tcpser sends
+.B POKE 838,\fIpokeval\fP
+to CBase (which executes it from its input stream) and retunes its own serial
+port to the chosen
+.IR speed ,
+so the whole session runs at that rate.  Example:
+.B \-b 2400=6,9600=8,38400=10
+(the pokeval numbers are your CBase POKE 838 baud values).
 .SS "Network"
 .TP
 .BI \-p " port"

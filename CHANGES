@@ -84,6 +84,16 @@
             set through locked setters
   CLEANUP:  removed unused get_safe_config_path() (env paths still validated by
             validate_file_path: canonicalized + traversal-checked)
+1.3.0 (feature — on-connect caller baud selection)
+  FEATURE: -b speed=pokeval[,...] enables a per-caller speed menu. On connect
+           (after the gate, before ringing) the caller picks a speed; tcpser
+           sends "POKE 838,<pokeval>" to CBase over the serial link and retunes
+           its own port to match, so the session runs at the chosen rate. Lets
+           callers dial down from 230400 to a slower/authentic speed. Best-
+           effort: timeout, peer close, or an invalid choice keeps the current
+           speed; picking the current speed sends no POKE. Added ser_set_speed()
+           / dce_set_speed() for runtime baud changes (TCSADRAIN so the POKE
+           flushes at the old speed before the port switches).
 1.2.4 (crash fixes — segfault on answer)
   SECURITY: fixed 1-byte stack buffer overflow in ip_thread (bridge.c): the
             socket read used the full sizeof(buf) so a 258-byte recv() made the

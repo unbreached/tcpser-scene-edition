@@ -95,6 +95,7 @@ Run `tcpser -h` for the full option list, grouped by category.
 | `-S <speed>` | Speed reported in CONNECT message |
 | `-I` | Invert DCD pin |
 | `-i <string>` | Modem init string (omit AT prefix) |
+| `-b <list>` | On-connect caller speed menu (requires CBase). `list` is comma-separated `speed=pokeval` pairs; the caller picks a speed, tcpser sends `POKE 838,<pokeval>` to CBase and retunes its own serial port to match. E.g. `-b 2400=6,9600=8,38400=10` (replace pokevals with your CBase POKE 838 values) |
 
 **Network:**
 | Flag | Description |

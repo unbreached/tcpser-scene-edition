@@ -78,6 +78,22 @@ int dce_set_flow_control(dce_config *cfg, int opts) {
   return rc;
 }
 
+/* Retune the DCE (serial port) baud rate at runtime and record the new speed.
+ * For ip232 there is no real UART, so we just record the requested speed. */
+int dce_set_speed(dce_config *cfg, int speed) {
+  int rc = 0;
+
+  LOG_ENTER();
+  if(cfg->is_ip232) {
+    cfg->port_speed = speed;
+  } else {
+    rc = ser_set_speed(cfg->fd, speed);
+    if(rc == 0) cfg->port_speed = speed;
+  }
+  LOG_EXIT();
+  return rc;
+}
+
 int dce_set_control_lines(dce_config *cfg, int state) {
   int rc;
 

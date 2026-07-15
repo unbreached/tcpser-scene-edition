@@ -35,6 +35,9 @@ typedef enum {
 #define MDM_CONN_OUTGOING 1
 #define MDM_CONN_INCOMING 2
 
+/* Max entries in the on-connect caller baud-selection menu (-b) */
+#define BAUD_MENU_MAX 12
+
 #ifndef TRUE
 #define TRUE 1
 #define FALSE 0
@@ -146,6 +149,15 @@ typedef struct modem_config {
   // Max session time in minutes (0 = unlimited).  Set via -m flag.
   // Disconnects caller after this many minutes to prevent line hogging.
   int  max_session_minutes;
+
+  // On-connect caller baud selection (-b). When enabled, an incoming TCP caller
+  // is shown a speed menu; on selection tcpser sends "POKE 838,<val>" to CBase
+  // (which runs it from its input stream) and retunes its own serial port to the
+  // chosen baud so the whole session runs at that speed.
+  int  baud_menu_enabled;
+  int  baud_menu_count;
+  int  baud_menu_speed[BAUD_MENU_MAX];   // e.g. 9600
+  int  baud_menu_poke[BAUD_MENU_MAX];    // POKE 838 value that selects that speed
 } modem_config;
 
 void mdm_init(void);

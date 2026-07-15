@@ -47,6 +47,7 @@ typedef struct dce_config {
 void dce_init_config(dce_config *cfg);
 int dce_connect(dce_config *cfg);
 int dce_set_flow_control(dce_config *cfg, int opts);
+int dce_set_speed(dce_config *cfg, int speed);
 int dce_set_control_lines(dce_config *cfg, int state);
 int dce_get_control_lines(dce_config *cfg);
 int dce_check_control_lines(dce_config *cfg);

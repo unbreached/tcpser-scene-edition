@@ -181,6 +181,37 @@ int ser_set_flow_control(int fd, int status) {
 }
 
 
+/* Change the baud rate of an already-open serial port at runtime.
+ * TCSADRAIN lets any bytes already queued for TX (e.g. the "POKE 838,x" we just
+ * wrote) flush at the OLD speed before the port switches, so the C64 receives
+ * them intact. Returns 0 on success, -1 on unsupported speed or ioctl failure. */
+int ser_set_speed(int fd, int speed) {
+  struct termios tio;
+  int bps_rate = ser_get_bps_const(speed);
+
+  LOG_ENTER();
+  if(bps_rate < 0) {
+    LOG(LOG_ERROR, "Refusing to set unsupported baud rate %d", speed);
+    LOG_EXIT();
+    return -1;
+  }
+  if(0 != tcgetattr(fd, &tio)) {
+    ELOG(LOG_ERROR, "Could not get serial attributes for speed change");
+    LOG_EXIT();
+    return -1;
+  }
+  cfsetispeed(&tio, bps_rate);
+  cfsetospeed(&tio, bps_rate);
+  if(0 != tcsetattr(fd, TCSADRAIN, &tio)) {
+    ELOG(LOG_ERROR, "Could not change serial speed to %d", speed);
+    LOG_EXIT();
+    return -1;
+  }
+  LOG(LOG_INFO, "Serial port speed changed to %d", speed);
+  LOG_EXIT();
+  return 0;
+}
+
 int ser_get_control_lines(int fd) {
   int status;
 

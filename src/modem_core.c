@@ -99,6 +99,10 @@ void mdm_init_config(modem_config *cfg) {
   // Max session time (default 0 = unlimited)
   cfg->max_session_minutes = 0;
 
+  // On-connect caller baud menu (-b) disabled by default
+  cfg->baud_menu_enabled = FALSE;
+  cfg->baud_menu_count = 0;
+
   for(i = 0; i < (int)(sizeof(cfg->s) / sizeof(cfg->s[0])); i++) {
     cfg->s[i] = 0;
   }
