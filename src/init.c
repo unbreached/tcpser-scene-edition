@@ -277,6 +277,11 @@ int init(int argc,
             }
             pair = strtok(NULL, ",");
           }
+          /* Single-keypress menu tops out at 9 entries; warn if more were given. */
+          if(pair != NULL) {
+            fprintf(stderr, "Warning: -b supports at most %d speeds (single-key menu); ignoring the rest\n",
+                    BAUD_MENU_MAX);
+          }
           cfg[i].baud_menu_enabled = (cfg[i].baud_menu_count > 0);
         }
         break;

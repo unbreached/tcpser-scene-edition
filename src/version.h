@@ -3,7 +3,7 @@
 
 #define VER_MAJOR         1
 #define VER_MINOR         3
-#define VER_PATCH         0
+#define VER_PATCH         1
 
 #define VERSION           TOSTRING(VER_MAJOR) "." TOSTRING(VER_MINOR) "." TOSTRING(VER_PATCH)
 #define EDITION           "ELiTE RETRO BBS EDiTiON"

@@ -784,6 +784,8 @@ static void baud_select_menu(modem_config *cfg) {
 
   if(speed == cfg->dce_data.port_speed) {
     LOG(LOG_INFO, "Baud menu: %d baud already current, no POKE needed", speed);
+    /* Report the negotiated speed in the CONNECT result. */
+    cfg->line_speed = speed;
   } else {
     /* Send "POKE 838,<val>" + RETURN to CBase over the serial link at the
      * CURRENT speed (both sides still agree). PETSCII uppercase letters and
@@ -797,11 +799,18 @@ static void baud_select_menu(modem_config *cfg) {
      * we retune. dce_set_speed uses TCSADRAIN, so the POKE bytes already queued
      * are flushed at the old speed first, reaching the C64 intact. */
     usleep(300000);
-    dce_set_speed(&cfg->dce_data, speed);
+    /* Only report the new speed if the local port actually switched; on a
+     * tcsetattr failure keep (and report) the current speed rather than lie
+     * about the CONNECT rate. */
+    if(dce_set_speed(&cfg->dce_data, speed) == 0) {
+      cfg->line_speed = speed;
+    } else {
+      LOG(LOG_WARN, "Baud menu: retune to %d baud failed, keeping %d",
+          speed, cfg->dce_data.port_speed);
+      preconnect_write(fd, "\r\nSpeed change failed, keeping current.\r\n");
+      cfg->line_speed = cfg->dce_data.port_speed;
+    }
   }
-
-  /* Report the negotiated speed in the CONNECT result. */
-  cfg->line_speed = speed;
 }
 
 int accept_connection(modem_config *cfg) {

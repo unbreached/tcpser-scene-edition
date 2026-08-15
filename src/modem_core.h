@@ -35,8 +35,11 @@ typedef enum {
 #define MDM_CONN_OUTGOING 1
 #define MDM_CONN_INCOMING 2
 
-/* Max entries in the on-connect caller baud-selection menu (-b) */
-#define BAUD_MENU_MAX 12
+/* Max entries in the on-connect caller baud-selection menu (-b).
+ * The menu is selected by a single keypress ('1'..'9'), so at most 9 entries
+ * can ever be chosen — keep the capacity in sync so we never display an
+ * unselectable option. */
+#define BAUD_MENU_MAX 9
 
 #ifndef TRUE
 #define TRUE 1

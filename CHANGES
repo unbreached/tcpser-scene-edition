@@ -103,3 +103,11 @@
   SECURITY: fixed NULL-pointer dereference in ip_connect (ip.c): a colon-only or
             empty dial/phone-book address made strtok() return NULL, which was
             passed straight to gethostbyname()/inet_aton(). Added a NULL guard.
+1.3.1 (baud-menu fixes)
+  FIX: -b menu offered up to 12 speeds but selection is single-key ('1'-'9'),
+       so entries 10-12 were displayed yet unselectable. Capped BAUD_MENU_MAX
+       to 9 and warn when more speeds are configured.
+  FIX: baud retune failure was misreported — line_speed was set to the chosen
+       speed even if tcsetattr failed. Now only report the new speed on a
+       successful switch; otherwise keep and report the current speed.
+  DOC: README title and man page bumped (were still at 1.2.3 after 1.2.4/1.3.0).
