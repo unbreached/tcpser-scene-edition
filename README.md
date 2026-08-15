@@ -578,7 +578,7 @@ tcpser -v 25232 -s 38400 -l 4 -p 6400
 ## Project Structure
 
 ```
-tcpser-1.2.0/
+tcpser-scene-edition/
   src/               Source code (25 C modules)
     bridge.c         Connection handling, gate, blocklist, watchdog
     modem_core.c     AT command emulation, Hayes modem
