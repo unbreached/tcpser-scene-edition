@@ -1,4 +1,4 @@
-# TCPSER 1.3.1 - ELiTE RETRO BBS EDiTiON
+# TCPSER 1.4.0 - ELiTE RETRO BBS EDiTiON
 
 **GENESiS-PROJECT // HARDENED TCPSER FOR FRoZEN FLoPPY BBS**
 
@@ -305,27 +305,33 @@ tcpser -d /dev/ttyUSB0 -s 2400 -p 6400 -M -Y data/tcpser.stats
 
 ## Web Dashboard (-H) and Metrics
 
-`-H <port>` starts a small read-only HTTP dashboard (mobile-friendly)
-plus a Prometheus/OpenMetrics endpoint:
+`-H <port>` starts a read-only HTTP dashboard (mobile-friendly, SOC/NOC
+styled) plus a Prometheus/OpenMetrics endpoint. It works on its own —
+you do **not** need `-M` — and includes a **live traffic feed**:
 
-- `GET /`            — HTML dashboard (live stats + connection history)
-- `GET /api/status`  — JSON status
-- `GET /api/events`  — Server-Sent Events stream
+- `GET /`            — HTML dashboard (live stats, connection history, live traffic)
+- `GET /api/status`  — JSON status (stats + history + traffic)
+- `GET /api/events`  — Server-Sent Events stream (auto-updates the page)
 - `GET /metrics`     — Prometheus text exposition (`tcpser_*` counters)
 
 **Security:** the dashboard exposes caller IP addresses and stats, so it
-binds to `127.0.0.1` by default. Control exposure and auth with env vars:
+binds to `127.0.0.1` by default. The live traffic feed shows direction and
+byte counts always, but the **payload content preview is opt-in** because it
+can contain what callers type into the BBS (even passwords). Control exposure,
+auth, and content with env vars:
 
 | Variable | Effect | Default |
 |----------|--------|---------|
-| `TCPSER_DASH_BIND`  | Bind address (`0.0.0.0` to expose on the LAN/Internet) | `127.0.0.1` |
-| `TCPSER_DASH_TOKEN` | Require `?token=<value>` on every request (constant-time check) | _(none)_ |
+| `TCPSER_DASH_BIND`    | Bind address (`0.0.0.0` to expose on the LAN/Internet) | `127.0.0.1` |
+| `TCPSER_DASH_TOKEN`   | Require `?token=<value>` on every request (constant-time check) | _(none)_ |
+| `TCPSER_DASH_TRAFFIC` | `1` = include ASCII payload content in the traffic feed | off (metadata only) |
 
 If you expose the dashboard beyond localhost without a token, tcpser logs
-a warning. With a token set, open `http://host:port/?token=SECRET` (the
-page forwards the token to the API/SSE/metrics calls automatically).
-Per-connection read/write timeouts and a bounded handler-thread pool
-protect against slow-client / connection-exhaustion abuse.
+a warning. Enabling `TCPSER_DASH_TRAFFIC` while exposed logs a louder one —
+only turn it on behind localhost + a token. With a token set, open
+`http://host:port/?token=SECRET` (the page forwards the token to the
+API/SSE/metrics calls automatically). Per-connection read/write timeouts and a
+bounded handler-thread pool protect against slow-client / exhaustion abuse.
 
 ```bash
 export TCPSER_DASH_BIND=0.0.0.0

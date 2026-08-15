@@ -193,6 +193,17 @@ int main(int argc, char *argv[]) {
 
   /* Start web dashboard if -H flag is set */
   if(webserver_get_port() > 0) {
+    /* The web dashboard reads live stats + traffic from g_dash. If the terminal
+     * dashboard (-M) didn't already initialise it, bring it up headless so the
+     * web view isn't empty (this also enables traffic capture). */
+    if(!(log_get_trace_flags() & TRACE_MONITOR)) {
+      int listen_port = port_count > 0 ? ports[0].port : 6400;
+      dashboard_init_headless(
+        cfg[0].dce_data.is_ip232 ? "(ip232)" : cfg[0].dce_data.tty,
+        cfg[0].dce_data.port_speed, listen_port, modem_count);
+      const char *sp = dashboard_get_stats_path();
+      if(sp) dashboard_load_stats(sp);
+    }
     webserver_start();
     fprintf(stderr, "  Web:     http://%s:%d/%s\n",
             webserver_get_bind(), webserver_get_port(),

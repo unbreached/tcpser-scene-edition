@@ -68,6 +68,8 @@ typedef struct {
 extern dashboard_state_t g_dash;
 
 void dashboard_init(const char *tty, int speed, int port, int modem_count);
+void dashboard_init_headless(const char *tty, int speed, int port, int modem_count);
+int  dashboard_capture_active(void);
 void dashboard_set_serial_fd(int fd);
 void dashboard_set_modem_cfg(void *cfg);
 void dashboard_lock(void);

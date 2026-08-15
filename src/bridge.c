@@ -90,22 +90,55 @@ static const char* allowlist_path(void) {
   return "tcpser.allowlist";
 }
 
-static int ip_is_allowed(const char *ip) {
-  if(!ip || !ip[0]) return FALSE;
-  FILE *f = fopen(allowlist_path(), "r");
-  if(!f) return FALSE;
+/* In-memory allowlist cache. The allowlist was re-opened and fully scanned on
+ * every connection; cache it and reload only when the file's mtime changes
+ * (checked at most every 10s), mirroring the blocklist. Edits take effect
+ * within ~10s instead of instantly — the same trade-off the blocklist makes. */
+#define MAX_ALLOW 256
+static char g_allow[MAX_ALLOW][INET_ADDRSTRLEN];
+static int  g_allow_count = 0;
+static time_t g_allow_last_check = 0;
+static time_t g_allow_mtime = 0;
+static pthread_mutex_t g_allow_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+static void allowlist_load_if_needed(void) {
+  time_t now = time(NULL);
+  if(g_allow_last_check != 0 && (now - g_allow_last_check) < 10) return;
+  g_allow_last_check = now;
+
+  const char *path = allowlist_path();
+  struct stat st;
+  if(stat(path, &st) != 0) { g_allow_count = 0; g_allow_mtime = 0; return; }
+  if(g_allow_mtime != 0 && st.st_mtime == g_allow_mtime) return;
+  g_allow_mtime = st.st_mtime;
+
+  FILE *f = fopen(path, "r");
+  if(!f) { g_allow_count = 0; return; }
+  g_allow_count = 0;
   char line[256];
-  while(fgets(line, sizeof(line), f)) {
-    /* Strip whitespace and skip comments */
+  while(fgets(line, sizeof(line), f) && g_allow_count < MAX_ALLOW) {
     char *p = line;
     while(*p == ' ' || *p == '\t') p++;
     if(*p == '#' || *p == '\n' || *p == '\0') continue;
     size_t n = strlen(p);
     while(n > 0 && (p[n-1] == '\n' || p[n-1] == '\r' || p[n-1] == ' ')) p[--n] = '\0';
-    if(strcmp(p, ip) == 0) { fclose(f); return TRUE; }
+    if(p[0] == 0 || strlen(p) >= INET_ADDRSTRLEN) continue;
+    snprintf(g_allow[g_allow_count], INET_ADDRSTRLEN, "%s", p);
+    g_allow_count++;
   }
   fclose(f);
-  return FALSE;
+}
+
+static int ip_is_allowed(const char *ip) {
+  if(!ip || !ip[0]) return FALSE;
+  int result = FALSE;
+  pthread_mutex_lock(&g_allow_mutex);
+  allowlist_load_if_needed();
+  for(int i = 0; i < g_allow_count; i++) {
+    if(strcmp(g_allow[i], ip) == 0) { result = TRUE; break; }
+  }
+  pthread_mutex_unlock(&g_allow_mutex);
+  return result;
 }
 
 /* Persistent blocklist file.
@@ -369,23 +402,35 @@ int blocklist_unblock_all_timed(void) {
   return cleared;
 }
 
-/* --- PETSCII helpers ---------------------------------------------------- */
-static void petscii_send_byte(int fd, unsigned char b) {
-  (void)ip_write(fd, &b, 1);
+/* --- Batched PETSCII output --------------------------------------------
+ * Banner drawing used to emit one write() syscall per byte (~90 per incoming
+ * call, plus a matching trace/monitor hit each). These helpers accumulate into
+ * a stack-local buffer (thread-safe — no shared state) and flush in a single
+ * ip_write(). Callers flush at each pacing usleep so the "typing" effect and
+ * exact byte order are preserved. */
+typedef struct { int fd; int len; unsigned char buf[1024]; } obuf_t;
+
+static void ob_init(obuf_t *o, int fd) { o->fd = fd; o->len = 0; }
+
+static void ob_flush(obuf_t *o) {
+  if(o->len > 0) { (void)ip_write(o->fd, o->buf, o->len); o->len = 0; }
 }
 
-static void petscii_repeat(int fd, unsigned char b, int n) {
-  for(int i = 0; i < n; i++) (void)ip_write(fd, &b, 1);
+static void ob_byte(obuf_t *o, unsigned char b) {
+  if(o->len >= (int)sizeof(o->buf)) ob_flush(o);
+  o->buf[o->len++] = b;
 }
 
-static void petscii_goto(int fd, int row, int col) {
-  /* row: 0-24, col: 0-39 */
-  const unsigned char HOME = 19;  /* $13 */
-  const unsigned char DOWN = 17;  /* $11 */
-  const unsigned char RIGHT = 29; /* $1D */
-  petscii_send_byte(fd, HOME);
-  if(row > 0) petscii_repeat(fd, DOWN, row);
-  if(col > 0) petscii_repeat(fd, RIGHT, col);
+static void ob_str(obuf_t *o, const char *s) {
+  if(!s) return;
+  while(*s) ob_byte(o, (unsigned char)*s++);
+}
+
+static void ob_goto(obuf_t *o, int row, int col) {
+  /* row: 0-24, col: 0-39 — PETSCII HOME, then DOWN*row, RIGHT*col */
+  ob_byte(o, 19);                              /* HOME  $13 */
+  for(int i = 0; i < row; i++) ob_byte(o, 17); /* DOWN  $11 */
+  for(int i = 0; i < col; i++) ob_byte(o, 29); /* RIGHT $1D */
 }
 
 /* Normalize PETSCII-ish input to ASCII-ish for password compare */
@@ -457,54 +502,57 @@ static void send_preconnect_banner(modem_config *cfg) {
   const unsigned char RVS_ON = 18;   /* $12 */
   const unsigned char RVS_OFF = 146; /* $92 */
 
-  petscii_send_byte(fd, CLS);
-  petscii_send_byte(fd, WHITE);
+  obuf_t o; ob_init(&o, fd);
+  ob_byte(&o, CLS);
+  ob_byte(&o, WHITE);
 
   /* Header */
-  petscii_goto(fd, 2, 7);
-  petscii_send_byte(fd, RVS_ON);
-  petscii_send_byte(fd, GREEN);
-  preconnect_write(fd, "   UNBREACHED BBS GATEWAY   ");
-  petscii_send_byte(fd, RVS_OFF);
-  petscii_send_byte(fd, WHITE);
+  ob_goto(&o, 2, 7);
+  ob_byte(&o, RVS_ON);
+  ob_byte(&o, GREEN);
+  ob_str(&o, "   UNBREACHED BBS GATEWAY   ");
+  ob_byte(&o, RVS_OFF);
+  ob_byte(&o, WHITE);
 
-  /* Boot lines */
-  petscii_goto(fd, 6, 4);
-  petscii_send_byte(fd, YELLOW);
-  preconnect_write(fd, "Loading BBS... Please Wait");
-  usleep(250000);
+  /* Boot lines — flush at each pace point so the "typing" effect is preserved */
+  ob_goto(&o, 6, 4);
+  ob_byte(&o, YELLOW);
+  ob_str(&o, "Loading BBS... Please Wait");
+  ob_flush(&o); usleep(250000);
 
-  petscii_goto(fd, 8, 4);
-  petscii_send_byte(fd, WHITE);
-  preconnect_write(fd, "Enabling RS232 connection... ");
-  usleep(200000);
-  petscii_send_byte(fd, GREEN);
-  preconnect_write(fd, "DONE");
-  petscii_send_byte(fd, WHITE);
+  ob_goto(&o, 8, 4);
+  ob_byte(&o, WHITE);
+  ob_str(&o, "Enabling RS232 connection... ");
+  ob_flush(&o); usleep(200000);
+  ob_byte(&o, GREEN);
+  ob_str(&o, "DONE");
+  ob_byte(&o, WHITE);
 
-  petscii_goto(fd, 10, 4);
-  petscii_send_byte(fd, WHITE);
-  preconnect_write(fd, "Connecting to Commodore 64... ");
-  usleep(200000);
-  petscii_send_byte(fd, GREEN);
-  preconnect_write(fd, "DONE");
-  petscii_send_byte(fd, WHITE);
+  ob_goto(&o, 10, 4);
+  ob_byte(&o, WHITE);
+  ob_str(&o, "Connecting to Commodore 64... ");
+  ob_flush(&o); usleep(200000);
+  ob_byte(&o, GREEN);
+  ob_str(&o, "DONE");
+  ob_byte(&o, WHITE);
 
-  petscii_goto(fd, 13, 4);
-  petscii_send_byte(fd, GREEN);
-  preconnect_write(fd, "READY.");
-  petscii_send_byte(fd, WHITE);
+  ob_goto(&o, 13, 4);
+  ob_byte(&o, GREEN);
+  ob_str(&o, "READY.");
+  ob_byte(&o, WHITE);
 
-  preconnect_write(fd, "\r\n\r\n");
+  ob_str(&o, "\r\n\r\n");
+  ob_flush(&o);
 }
 
 static void send_access_granted(modem_config *cfg, int fd, int delay_us) {
   /* If user supplied a file, show it (raw bytes). Otherwise fallback to default message. */
   if(cfg && cfg->access_granted_file[0]) {
-    const unsigned char CLS = 147; /* PETSCII CLR/HOME */
-    petscii_send_byte(fd, CLS);
+    obuf_t o; ob_init(&o, fd);
+    ob_byte(&o, 147);            /* PETSCII CLR/HOME */
+    ob_flush(&o);
     (void)writeFile(cfg->access_granted_file, fd);
-    preconnect_write(fd, "\r\n\r\n");
+    { obuf_t t; ob_init(&t, fd); ob_str(&t, "\r\n\r\n"); ob_flush(&t); }
     if(delay_us > 0) usleep(delay_us);
     return;
   }
@@ -517,14 +565,16 @@ static void send_access_granted(modem_config *cfg, int fd, int delay_us) {
     const unsigned char RVS_ON = 18;
     const unsigned char RVS_OFF = 146;
 
-    petscii_send_byte(fd, CLS);
-    petscii_send_byte(fd, GREEN);
-    petscii_goto(fd, 12, 13);
-    petscii_send_byte(fd, RVS_ON);
-    preconnect_write(fd, "ACCESS GRANTED");
-    petscii_send_byte(fd, RVS_OFF);
-    petscii_send_byte(fd, WHITE);
-    preconnect_write(fd, "\r\n\r\n");
+    obuf_t o; ob_init(&o, fd);
+    ob_byte(&o, CLS);
+    ob_byte(&o, GREEN);
+    ob_goto(&o, 12, 13);
+    ob_byte(&o, RVS_ON);
+    ob_str(&o, "ACCESS GRANTED");
+    ob_byte(&o, RVS_OFF);
+    ob_byte(&o, WHITE);
+    ob_str(&o, "\r\n\r\n");
+    ob_flush(&o);
     if(delay_us > 0) usleep(delay_us);
   }
 }
@@ -792,6 +842,10 @@ static void baud_select_menu(modem_config *cfg) {
      * digits share ASCII code points, so the literal ASCII bytes are correct. */
     char poke[32];
     int plen = snprintf(poke, sizeof(poke), "POKE 838,%d\r", pokeval);
+    /* snprintf returns the would-have-written length; clamp so a truncated
+     * result can never make dce_write read past the buffer. */
+    if(plen < 0) plen = 0;
+    if(plen >= (int)sizeof(poke)) plen = (int)sizeof(poke) - 1;
     LOG(LOG_INFO, "Baud menu: caller chose %d baud -> sending POKE 838,%d",
         speed, pokeval);
     dce_write(&cfg->dce_data, (unsigned char *)poke, plen);

@@ -37,6 +37,23 @@ static pthread_t g_web_thread;
 static volatile int g_web_running = 0;
 static char g_web_bind[64] = "127.0.0.1";
 static char g_web_token[128] = {0};
+/* Live-traffic CONTENT preview is opt-in (TCPSER_DASH_TRAFFIC=1): the raw
+ * bytes can include what callers type into the BBS (even passwords), so by
+ * default the feed shows only direction + byte counts + timing, never content. */
+static int g_web_traffic = 0;
+
+/* Build a JSON-safe, printable ASCII preview of raw traffic bytes. High bit is
+ * stripped (PETSCII), control/non-printable become '.', and '"'/'\\' escaped. */
+static void json_ascii_preview(const unsigned char *raw, int rawlen, char *out, size_t outsz) {
+  size_t o = 0;
+  for(int i = 0; i < rawlen && o + 2 < outsz; i++) {
+    unsigned char c = (unsigned char)(raw[i] & 0x7f);
+    if(c == '"' || c == '\\') { out[o++] = '\\'; out[o++] = (char)c; }
+    else if(c >= 0x20 && c < 0x7f) out[o++] = (char)c;
+    else out[o++] = '.';
+  }
+  out[o] = 0;
+}
 
 static int g_web_handlers = 0;
 static pthread_mutex_t g_web_handlers_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -63,20 +80,45 @@ static const char *dashboard_html =
 "<title>TCPSER Dashboard</title>\n"
 "<style>\n"
 "* { margin: 0; padding: 0; box-sizing: border-box; }\n"
-"body { font: 14px monospace; background: #000; color: #0f0; padding: 10px; }\n"
-".header { color: #ff0; margin-bottom: 20px; text-align: center; }\n"
-".section { border: 1px solid #333; margin: 10px 0; padding: 10px; }\n"
-".section h3 { color: #0ff; margin-bottom: 10px; }\n"
+":root { --cy: #29f6ff; --mg: #ff2bd6; --gn: #26ff8f; }\n"
+"body { font: 14px 'Courier New', monospace; color: #8be9fd;\n"
+"  background: #05060a; padding: 14px; min-height: 100vh;\n"
+"  background-image:\n"
+"    linear-gradient(rgba(41,246,255,0.04) 1px, transparent 1px),\n"
+"    linear-gradient(90deg, rgba(255,43,214,0.04) 1px, transparent 1px);\n"
+"  background-size: 100% 3px, 42px 100%; }\n"
+".header { text-align: center; margin-bottom: 22px; }\n"
+".header h1 { color: var(--cy); font-size: 19px; letter-spacing: 2px;\n"
+"  text-shadow: 0 0 6px var(--cy), 0 0 16px var(--cy), 0 0 2px #fff; }\n"
+"#status { color: var(--mg); text-shadow: 0 0 6px var(--mg); margin-top: 6px; }\n"
+".section { border: 1px solid #103a3f; border-radius: 4px; margin: 12px 0;\n"
+"  padding: 12px; background: rgba(41,246,255,0.02);\n"
+"  box-shadow: 0 0 10px rgba(41,246,255,0.12), inset 0 0 14px rgba(41,246,255,0.03); }\n"
+".section h3 { color: var(--mg); margin-bottom: 12px; font-size: 13px;\n"
+"  text-transform: uppercase; letter-spacing: 2px; text-shadow: 0 0 6px var(--mg);\n"
+"  border-left: 3px solid var(--mg); padding-left: 8px; }\n"
 ".grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 15px; }\n"
 ".stats { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }\n"
-".stat { padding: 5px; border: 1px solid #444; text-align: center; }\n"
-".stat .label { color: #888; font-size: 12px; }\n"
-".stat .value { color: #0f0; font-weight: bold; }\n"
-".history { max-height: 200px; overflow-y: auto; }\n"
-".history-item { padding: 3px 0; border-bottom: 1px solid #222; }\n"
-".connected { color: #0f0; }\n"
-".blocked { color: #f00; }\n"
-".gate-fail { color: #fa0; }\n"
+".stat { padding: 10px 5px; border: 1px solid #0c3a3a; border-radius: 3px;\n"
+"  text-align: center; background: rgba(0,0,0,0.4); }\n"
+".stat .label { color: #4fb3a3; font-size: 11px; text-transform: uppercase; letter-spacing: 1px; }\n"
+".stat .value { color: var(--cy); font-weight: bold; font-size: 18px; text-shadow: 0 0 6px var(--cy); }\n"
+".history { max-height: 220px; overflow-y: auto; }\n"
+".history-item { padding: 4px 2px; border-bottom: 1px solid rgba(41,246,255,0.08); font-size: 13px; }\n"
+".connected { color: var(--gn); text-shadow: 0 0 5px var(--gn); }\n"
+".blocked { color: #ff2d5e; text-shadow: 0 0 6px #ff2d5e; }\n"
+".gate-fail { color: #ffb020; text-shadow: 0 0 6px #ffb020; }\n"
+".feed { max-height: 320px; overflow-y: auto; font-size: 12px; line-height: 1.6; }\n"
+".feed-row { display: flex; gap: 10px; align-items: baseline; padding: 3px 0;\n"
+"  border-bottom: 1px solid rgba(41,246,255,0.06); white-space: nowrap; }\n"
+".chip { flex: 0 0 auto; padding: 0 6px; border-radius: 2px; font-size: 10px; letter-spacing: 1px; }\n"
+".chip.in { color: var(--cy); border: 1px solid rgba(41,246,255,0.5); text-shadow: 0 0 5px var(--cy); }\n"
+".chip.out { color: var(--mg); border: 1px solid rgba(255,43,214,0.5); text-shadow: 0 0 5px var(--mg); }\n"
+".bytes { flex: 0 0 auto; color: #4fb3a3; font-variant-numeric: tabular-nums; }\n"
+".txt { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; color: #8be9fd; opacity: 0.85; }\n"
+".muted { color: #4a6b78; font-size: 11px; padding: 6px 2px; }\n"
+"::-webkit-scrollbar { width: 8px; }\n"
+"::-webkit-scrollbar-thumb { background: rgba(41,246,255,0.25); border-radius: 4px; }\n"
 "@media (max-width: 768px) {\n"
 "  .grid { grid-template-columns: 1fr; }\n"
 "  .stats { grid-template-columns: 1fr; }\n"
@@ -104,6 +146,10 @@ static const char *dashboard_html =
 "    <div class='history' id='history'>Loading...</div>\n"
 "  </div>\n"
 "</div>\n"
+"<div class='section'>\n"
+"  <h3>Live Traffic</h3>\n"
+"  <div class='feed' id='feed'>Waiting for traffic...</div>\n"
+"</div>\n"
 "<script>\n"
 "const TOKEN = new URLSearchParams(location.search).get('token') || '';\n"
 "const Q = TOKEN ? ('?token=' + encodeURIComponent(TOKEN)) : '';\n"
@@ -127,6 +173,25 @@ static const char *dashboard_html =
 "    div.className = 'history-item ' + getResultClass(item.result);\n"
 "    div.textContent = item.time + ' ' + item.ip + ' ' + getResultText(item.result) + ' (' + item.duration + 's)';\n"
 "    history.appendChild(div);\n"
+"  });\n"
+"  renderFeed(data);\n"
+"}\n"
+"function renderFeed(data) {\n"
+"  const feed = document.getElementById('feed');\n"
+"  if (!data.traffic || data.traffic.length === 0) { feed.innerHTML = '<div class=\"muted\">No traffic yet.</div>'; return; }\n"
+"  feed.innerHTML = '';\n"
+"  if (!data.traffic_content) {\n"
+"    const m = document.createElement('div'); m.className = 'muted';\n"
+"    m.textContent = 'Content hidden — start tcpser with TCPSER_DASH_TRAFFIC=1 to show payloads (localhost + token only).';\n"
+"    feed.appendChild(m);\n"
+"  }\n"
+"  data.traffic.forEach(t => {\n"
+"    const row = document.createElement('div'); row.className = 'feed-row';\n"
+"    const chip = document.createElement('span'); chip.className = 'chip ' + t.dir;\n"
+"    chip.textContent = (t.dir === 'in') ? 'CALLER->BBS' : 'BBS->CALLER';\n"
+"    const b = document.createElement('span'); b.className = 'bytes'; b.textContent = t.bytes + 'B';\n"
+"    const x = document.createElement('span'); x.className = 'txt'; x.textContent = t.text || '';\n"
+"    row.appendChild(chip); row.appendChild(b); row.appendChild(x); feed.appendChild(row);\n"
 "  });\n"
 "}\n"
 "function formatBytes(bytes) {\n"
@@ -190,6 +255,32 @@ static void get_status_json(char *buffer, size_t size) {
     strncat(buffer, entry, size - strlen(buffer) - 1);
   }
 
+  /* Live traffic feed: newest CALLER<->BBS lines. Direction + byte count always;
+   * ASCII content preview only when explicitly opted in (TCPSER_DASH_TRAFFIC). */
+  strncat(buffer, "\n  ],\n  \"traffic_content\": ", size - strlen(buffer) - 1);
+  strncat(buffer, g_web_traffic ? "true" : "false", size - strlen(buffer) - 1);
+  strncat(buffer, ",\n  \"traffic\": [\n", size - strlen(buffer) - 1);
+  {
+    int shown = 0;
+    for(int i = 0; i < g_dash.traffic_count && i < 12; i++) {
+      int idx = (g_dash.traffic_head - 1 - i + DASH_TRAFFIC_LINES) % DASH_TRAFFIC_LINES;
+      dash_traffic_line_t *t = &g_dash.traffic[idx];
+      char prev[160]; prev[0] = 0;
+      if(g_web_traffic) {
+        int rl = t->rawlen;
+        if(rl > (int)sizeof(t->raw)) rl = (int)sizeof(t->raw);
+        if(rl > 64) rl = 64;   /* cap preview length to bound response size */
+        json_ascii_preview(t->raw, rl, prev, sizeof(prev));
+      }
+      char entry[260];
+      snprintf(entry, sizeof(entry),
+        "%s    {\"dir\": \"%s\", \"bytes\": %d, \"text\": \"%s\"}",
+        shown > 0 ? ",\n" : "",
+        t->type == 16 ? "in" : "out", t->bytes, prev);
+      strncat(buffer, entry, size - strlen(buffer) - 1);
+      shown++;
+    }
+  }
   strncat(buffer, "\n  ]\n}", size - strlen(buffer) - 1);
   dashboard_unlock();
 }
@@ -264,7 +355,7 @@ static int request_authorized(const char *query) {
 /* Handle HTTP request securely */
 static void handle_request(int fd) {
   char buffer[8192];
-  char response[4096];
+  char response[8192];   /* status JSON now includes the live-traffic feed */
   http_request_t request;
   ssize_t n;
 
@@ -318,7 +409,7 @@ static void handle_request(int fd) {
       send_sse_header(fd);
       for(int i = 0; i < 60 && g_web_running; i++) {  /* up to ~5 min */
         get_status_json(response, sizeof(response));
-        char sse_msg[4200];
+        char sse_msg[8300];
         int sse_len = snprintf(sse_msg, sizeof(sse_msg), "data: %s\n\n", response);
         if(sse_len >= (int)sizeof(sse_msg)) sse_len = sizeof(sse_msg) - 1;
         if(write(fd, sse_msg, sse_len) < 0) break;
@@ -415,9 +506,12 @@ static void *webserver_thread(void *arg) {
 void webserver_init(int port) {
   const char *bind_env = getenv("TCPSER_DASH_BIND");
   const char *token_env = getenv("TCPSER_DASH_TOKEN");
+  const char *traffic_env = getenv("TCPSER_DASH_TRAFFIC");
   g_web_port = port;
   if(bind_env && bind_env[0]) safe_strncpy(g_web_bind, bind_env, sizeof(g_web_bind));
   if(token_env && token_env[0]) safe_strncpy(g_web_token, token_env, sizeof(g_web_token));
+  if(traffic_env && (traffic_env[0] == '1' || traffic_env[0] == 'y' || traffic_env[0] == 'Y'))
+    g_web_traffic = 1;
 }
 
 void webserver_start(void) {
@@ -463,6 +557,12 @@ void webserver_start(void) {
     LOG(LOG_WARN, "Web dashboard bound to %s with NO token — caller IPs and stats "
                   "are exposed to anyone who can reach port %d. Set TCPSER_DASH_TOKEN.",
         g_web_bind, g_web_port);
+  }
+  /* Live-traffic CONTENT preview can reveal what callers type (incl. passwords).
+   * Warn hard if it is exposed beyond localhost. */
+  if(g_web_traffic && (!loopback || g_web_token[0] == 0)) {
+    LOG(LOG_WARN, "TCPSER_DASH_TRAFFIC is ON — the web dashboard streams caller "
+                  "session CONTENT. Only expose this behind localhost + a token.");
   }
 
   g_web_running = 1;

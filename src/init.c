@@ -79,9 +79,10 @@ void print_help(char* name) {
 "\n"
 "  MONITORING / NOTIFY\n"
 "    -M                live ASCII traffic monitor (color, on stderr)\n"
-"    -H PORT           web dashboard + /metrics (HTTP)\n"
-"                      binds 127.0.0.1; set TCPSER_DASH_BIND to expose,\n"
-"                      TCPSER_DASH_TOKEN to require ?token=... auth\n"
+"    -H PORT           web dashboard (live stats/traffic) + /metrics (HTTP)\n"
+"                      binds 127.0.0.1; TCPSER_DASH_BIND to expose,\n"
+"                      TCPSER_DASH_TOKEN to require ?token=... auth,\n"
+"                      TCPSER_DASH_TRAFFIC=1 to show payload content\n"
 "    -e URL            webhook (Discord/Slack/ntfy/JSON POST; repeatable)\n"
 "\n"
 "  TOOLS\n"
@@ -424,10 +425,19 @@ int init(int argc,
   if (tty_set) {
     if (i < max_modem)
       i++;
+  } else if (argc <= 1) {
+    /* Bare invocation (no arguments at all): treat like -h — show the help
+     * cleanly and exit 0, instead of printing a scary FATAL error first. */
+    print_help(argv[0]);              /* does not return (exit 0) */
   } else {
-    // no modems defined
-    LOG(LOG_FATAL, "No modems defined");
-    print_help(argv[0]);
+    /* Arguments were given but none selected a serial device. Give a precise,
+     * friendly error pointing at the fix — not a giant help dump after a FATAL. */
+    fprintf(stderr,
+      "\n  tcpser: no serial device specified.\n"
+      "  Give -d <device> for a real serial port (e.g. -d /dev/ttyUSB0)\n"
+      "  or   -v <port>   for ip232 over TCP.\n"
+      "  Run '%s -h' for the full option list.\n\n", argv[0]);
+    exit(1);
   }
 
   LOG(LOG_DEBUG, "Read configuration for %i serial port(s)", i);

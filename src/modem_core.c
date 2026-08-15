@@ -204,23 +204,34 @@ void mdm_write(modem_config *cfg, unsigned char data[], int len) {
 }
 
 void mdm_send_response(int msg, modem_config *cfg) {
-  char msgID[17];
+  unsigned char buf[80];
+  int n = 0;
 
   LOG(LOG_DEBUG, "Sending %s response to modem", mdm_responses[msg]);
   if(cfg->send_responses == TRUE) {
     if(cfg->text_responses == TRUE) {
-      /* V1 (verbose): <CR><LF><text><CR><LF> */
+      /* V1 (verbose): <CR><LF><text><CR><LF> — assembled into one write so a
+       * response (and every RING) costs a single serial write, not three. */
       LOG(LOG_ALL, "Sending text response");
-      mdm_write(cfg, (unsigned char *)cfg->crlf, 2);
-      mdm_write(cfg, (unsigned char *)mdm_responses[msg], strlen(mdm_responses[msg]));
-      mdm_write(cfg, (unsigned char *)cfg->crlf, 2);
+      const char *txt = mdm_responses[msg];
+      size_t tl = strlen(txt);
+      if(tl > sizeof(buf) - 4) tl = sizeof(buf) - 4;
+      buf[n++] = (unsigned char)cfg->crlf[0];
+      buf[n++] = (unsigned char)cfg->crlf[1];
+      memcpy(buf + n, txt, tl); n += (int)tl;
+      buf[n++] = (unsigned char)cfg->crlf[0];
+      buf[n++] = (unsigned char)cfg->crlf[1];
     } else {
       /* V0 (numeric): <number><CR> — no LF, no leading CR+LF */
       LOG(LOG_ALL, "Sending numeric response");
-      snprintf(msgID, sizeof(msgID), "%d", msg);
-      mdm_write(cfg, (unsigned char *)msgID, strlen((char *)msgID));
-      mdm_write_char(cfg, (unsigned char)cfg->s[S_REG_CR]);
+      char msgID[17];
+      int m = snprintf(msgID, sizeof(msgID), "%d", msg);
+      if(m < 0) m = 0;
+      if(m > (int)sizeof(buf) - 1) m = (int)sizeof(buf) - 1;
+      memcpy(buf, msgID, (size_t)m); n = m;
+      buf[n++] = (unsigned char)cfg->s[S_REG_CR];
     }
+    mdm_write(cfg, buf, n);
   }
 }
 
@@ -355,11 +366,12 @@ int mdm_disconnect(modem_config* cfg, unsigned char force) {
     mdm_set_control_lines(cfg);
     if(type != MDM_CONN_NONE) {
       mdm_send_response(MDM_RESP_NO_CARRIER, cfg);
-      /* Pulse DCD to help BBS detect carrier loss (6551 polls DCD) */
-      dce_set_control_lines(&cfg->dce_data, 0);
-      usleep(200000);
-      mdm_set_control_lines(cfg);
-      usleep(200000);
+      /* Assert DCD inactive briefly so the C64's 6551 (which polls DCD) sees the
+       * carrier-loss edge, then restore normal lines. One settle is enough — the
+       * normal DCD high->low transition already happened via the
+       * mdm_set_control_lines() above; the old double-toggle only added ~400ms
+       * of hangup latency without producing an extra edge on a normal adapter.
+       * On an inverted adapter (-I) this remains a genuine high->low pulse. */
       dce_set_control_lines(&cfg->dce_data, 0);
       usleep(200000);
       mdm_set_control_lines(cfg);

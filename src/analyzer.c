@@ -1,24 +1,22 @@
 /*
- * RS232 Analyzer for tcpser-frozen
+ * RS232 Analyzer for tcpser  (interactive diagnostic for C64 RS232 adapters:
+ * SwiftLink, Turbo232, GLINK232, userport clones).
  *
- * World-class diagnostic for C64 RS232 adapters (SwiftLink, Turbo232,
- * GLINK232, userport clones).
+ * What it actually does (in order):
+ *   STEP 1  Detect baud rate — listen for the BBS's AT init at each baud rate
+ *           and pick the one that yields valid AT commands. NOTE: a BBS usually
+ *           sends its init ONCE, so if the first (your -s) speed is wrong the
+ *           init may be consumed as noise; if nothing is detected, restart the
+ *           BBS and run the analyzer again.
+ *   STEP 2  Control-line wiring — toggle DTR/RTS and observe which inputs move
+ *           (detects null-modem cross-wiring and 3-wire adapters).
+ *   STEP 3  Verify — send an OK response and confirm the BBS accepts it.
+ *   REPORT  Cartridge inference (from detected speed + whether control lines
+ *           responded) and a recommended command line.
  *
- * Phases 1-4: Interactive (C64 state changes required)
- *   1. Baseline (C64 off)
- *   2. C64 on, no BBS
- *   3. BBS started
- *   4. Control line wiring (DTR/RTS toggle)
- *   4b. DCD gating test (6551 ACIA receiver gate)
- *   4c. DSR disconnect test
- *
- * Phase 5: Fully autonomous matrix sweep (~4-7 min)
- *   10 baud rates x 3 flow control x 3 parity = 90 combinations
- *   Includes Turbo232 speeds: 57600, 115200, 230400
- *
- * Phase 6: Verification call at best settings
- * Phase 7: BBS shutdown (interactive)
- * Phase 8: Cartridge detection + recommended command line
+ * Limitations (be honest): flow-control type and parity are NOT swept/probed;
+ * the flow-control (&K3/&K4) suggestion in the report is a heuristic to verify,
+ * not a measurement. Cartridge detection is best-effort.
  */
 
 #include <stdio.h>
@@ -245,43 +243,32 @@ static const char *cartridge_name(int type) {
   }
 }
 
-static int detect_cartridge(int max_working_speed, int rtscts_works, int is_3wire) {
-  if(is_3wire && max_working_speed <= 2400)
-    return CART_USERPORT;
-
+/* Best-effort cartridge inference from what the analyzer actually measures:
+ * the detected baud rate and whether ANY control lines responded (is_3wire).
+ * Flow-control type is not probed, so this deliberately does not try to split
+ * UP9600 from a SwiftLink at 9600 by RTS/CTS (which was never measured) — a
+ * userport/UP9600 mod exposes no hardware handshake lines, so "no control
+ * lines" is the honest signal for a userport adapter. Every branch is
+ * reachable. */
+static int detect_cartridge(int max_working_speed, int is_3wire) {
   if(max_working_speed > 38400)
-    return CART_TURBO232;
-
-  if(max_working_speed >= 9600 && rtscts_works)
-    return CART_SWIFTLINK;
-
-  if(max_working_speed >= 9600)
-    return CART_SWIFTLINK;
-
-  if(max_working_speed <= 2400)
-    return CART_USERPORT;
-
-  /* Could be SwiftLink at lower speed or UP9600 at 9600 */
-  if(max_working_speed == 9600 && !rtscts_works)
-    return CART_USERPORT; /* likely UP9600 */
-
-  return CART_SWIFTLINK; /* best guess */
+    return CART_TURBO232;    /* only Turbo232 exceeds 38400 baud */
+  if(is_3wire)
+    return CART_USERPORT;    /* no handshake lines -> userport (incl. UP9600) */
+  return CART_SWIFTLINK;     /* control lines present -> 6551 ACIA cartridge */
 }
 
 /* ---- autonomous matrix sweep ---------------------------------------- */
 
 /*
- * NEW APPROACH: The BBS sends AT init commands when it starts up
- * (e.g., ATX2M0S0=0S7=30V1E0S2=1S10=30). We listen for those.
+ * The BBS sends AT init commands when it starts up
+ * (e.g., ATX2M0S0=0S7=30V1E0S2=1S10=30). We cycle through baud rates, listen
+ * ~2s at each, and flag the rate that yields valid AT text (not line noise).
  *
- * Strategy:
- * 1. Fast baud scan: cycle through baud rates, listen 2s each,
- *    check if received data is valid ASCII (not line noise)
- * 2. Once we find a baud rate that gives valid data, test
- *    flow control and parity variants at that speed
- * 3. Respond with OK to let the BBS proceed
- *
- * The user restarts the BBS before each round.
+ * IMPORTANT: this scan assumes the init is still arriving while we sweep. Most
+ * BBSes send it ONCE at startup, so the reliable procedure is: press ENTER
+ * here, THEN start (or restart) the BBS so its init lands during the sweep. If
+ * detection fails, restart the BBS and run the analyzer again.
  */
 
 static int run_baud_scan(int fd, int user_speed, combo_result_t *results, int max_results) {
@@ -386,8 +373,8 @@ int analyzer_run(const char *tty, int speed) {
   int dtr_affects = 0, rts_affects = 0;
   int dtr_caused_bbs_react = 0;
   int poweron_changes = 0;
-  int best_speed = speed, best_flow = 0;
-  int best_rx = 0, max_working_speed = 0, rtscts_works = 0;
+  int best_speed = speed;
+  int best_rx = 0, max_working_speed = 0;
   int verify_rx = 0;
   combo_result_t results[32]; /* collected for future summary output */
   int num_results = 0;
@@ -576,7 +563,7 @@ int analyzer_run(const char *tty, int speed) {
   int cts_is_rts = (rts_affects & TIOCM_CTS) != 0;
 
   /* Cartridge detection */
-  int cart = detect_cartridge(max_working_speed, rtscts_works, is_3wire);
+  int cart = detect_cartridge(max_working_speed, is_3wire);
 
   printf("\n  CARTRIDGE: %s\n", cartridge_name(cart));
 
@@ -618,8 +605,16 @@ int analyzer_run(const char *tty, int speed) {
     strcat(init_parts, "&D0");
     need_init = 1;
   }
-  if(best_flow == 1) { strcat(init_parts, "&K3"); need_init = 1; }
-  else if(best_flow == 2) { strcat(init_parts, "&K4"); need_init = 1; }
+  /* Flow control is not probed directly. For a 6551 cartridge with real control
+   * lines running at speed, RTS/CTS is usually required — recommend &K3 as a
+   * starting point (the note below tells the operator to verify it). */
+  int flow_is_heuristic = 0;
+  if(!is_3wire && rec_speed >= 4800 &&
+     (cart == CART_SWIFTLINK || cart == CART_TURBO232 || cart == CART_GLINK232)) {
+    strcat(init_parts, "&K3");
+    need_init = 1;
+    flow_is_heuristic = 1;
+  }
   if(need_init) printf(" -i \"%s\"", init_parts);
   printf(" -l 4 -p 6400 -x\n");
 
@@ -633,6 +628,12 @@ int analyzer_run(const char *tty, int speed) {
   printf("    -l 4       info-level logging\n");
   printf("    -p 6400    TCP listen port\n");
   printf("    -x         bot gate (require backspace)\n");
+  if(flow_is_heuristic) {
+    printf("\n  NOTE: flow control was not auto-probed. &K3 (RTS/CTS) is the\n");
+    printf("        usual choice for a 6551 cartridge at this speed; if the\n");
+    printf("        session stalls or drops characters, try removing &K3 or\n");
+    printf("        using &K4 (XON/XOFF) instead.\n");
+  }
 
   if(best_rx == 0) {
     printf("\n  TROUBLESHOOTING:\n");

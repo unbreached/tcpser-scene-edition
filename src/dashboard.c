@@ -41,20 +41,30 @@ static time_t g_last_autosave = 0;
 #define RST     E "0m"
 #define BOLD    E "1m"
 #define DIM     E "2m"
-#define C_RED   E "31m"
-#define C_GRN   E "32m"
-#define C_YEL   E "33m"
-#define C_BLU   E "34m"
-#define C_MAG   E "35m"
-#define C_CYN   E "36m"
-#define C_WHT   E "37m"
-#define C_GRY   E "90m"
-#define C_LRED  E "91m"
-#define C_LGRN  E "92m"
-#define C_LYEL  E "93m"
-#define C_LBLU  E "94m"
-#define C_LMAG  E "95m"
-#define C_LCYN  E "96m"
+
+/* --- Cyberpunk neon palette (xterm-256) ---------------------------------
+ * The dashboard names its colours semantically (C_LCYN = header, C_LMAG =
+ * primary accent, C_LYEL = stats, C_LGRN = live/online, C_GRY = grid/borders).
+ * We remap those names to a cohesive neon set — hot magenta, electric cyan,
+ * acid green, neon amber — over a muted blue-violet grid. Layout is driven by
+ * cursor positioning, so only the look changes, not the geometry.
+ * Falls back gracefully: any 256-colour-capable terminal (all modern ones)
+ * renders these; the SGR reset (RST) restores default. */
+#define N(n)    E "38;5;" #n "m"
+#define C_RED   N(197)   /* neon red/pink   */
+#define C_GRN   N(41)    /* neon green      */
+#define C_YEL   N(178)   /* amber           */
+#define C_BLU   N(63)    /* electric blue   */
+#define C_MAG   N(164)   /* magenta         */
+#define C_CYN   N(44)    /* deep cyan       */
+#define C_WHT   N(255)   /* near-white      */
+#define C_GRY   N(60)    /* muted grid line */
+#define C_LRED  N(203)   /* coral           */
+#define C_LGRN  N(48)    /* acid green      */
+#define C_LYEL  N(220)   /* neon gold       */
+#define C_LBLU  N(75)    /* sky neon        */
+#define C_LMAG  N(198)   /* hot neon pink   */
+#define C_LCYN  N(51)    /* electric cyan   */
 #define CLR     E "2J" E "H"
 #define CHIDE   E "?25l"
 #define CSHOW   E "?25h"
@@ -171,6 +181,11 @@ static const char *traffic_color(int type) {
 /* ---- Main render ---- */
 
 static void render(void) {
+  /* Only draw when the interactive terminal dashboard (-M) owns the tty. In
+   * headless mode (-H web dashboard without -M) g_term_raw is 0, so the many
+   * internal render() calls from the stat/event updaters become no-ops and we
+   * never spew ANSI to stderr — we just keep collecting data in g_dash. */
+  if(!g_term_raw) return;
   FILE *f = stderr;
   W = 80; H = 24;
   term_size(&W, &H);
@@ -191,7 +206,7 @@ static void render(void) {
   fprintf(f, CLR CHIDE);
 
   /* ═══════ HEADER ═══════ */
-  top_box(f, "TCPSER " VERSION " // " EDITION, C_LCYN, W);
+  top_box(f, "\xe2\x96\x93\xe2\x96\x92\xe2\x96\x91 TCPSER " VERSION " // " EDITION " \xe2\x96\x91\xe2\x96\x92\xe2\x96\x93", C_LCYN, W);
   {
     fmt_uptime(g_dash.start_time, b1, sizeof(b1));
     fprintf(f, C_GRY VT RST " " C_LGRN "Uptime:" RST " " C_WHT "%-12s" RST
@@ -216,8 +231,8 @@ static void render(void) {
   /* Row 1: Connection state + Connections */
   {
     fprintf(f, C_GRY VT RST " " C_CYN "State:" RST "  ");
-    if(g_dash.connected) fprintf(f, BOLD C_GRN BUL " CALLER ONLINE" RST);
-    else fprintf(f, C_YEL BUE " WAITING" RST);
+    if(g_dash.connected) fprintf(f, BOLD C_LGRN BUL " CARRIER LOCKED" RST);
+    else fprintf(f, C_LMAG BUE " AWAITING CARRIER" RST);
     gotocol(f, lw); fprintf(f, C_GRY VT RST);
 
     fprintf(f, C_GRY VT RST " " C_LYEL "Connections:" RST " " BOLD C_WHT "%lu" RST, g_dash.total_connections);
@@ -424,6 +439,8 @@ static void render(void) {
 
 /* Partial redraw: only traffic rows + LEDs + byte counter */
 static void render_traffic_only(void) {
+  /* Terminal-only: never draw in headless (web-only) mode — see render(). */
+  if(!g_term_raw) return;
   FILE *f = stderr;
   int tw = 80, th = 24;
   term_size(&tw, &th);
@@ -530,9 +547,8 @@ static void do_reset(void) {
 
 /* Public API */
 
-void dashboard_init(const char *tty, int speed, int port, int modem_count) {
+static void dashboard_init_state(const char *tty, int speed, int port, int modem_count) {
   memset(&g_dash, 0, sizeof(g_dash));
-  signal(SIGWINCH, handle_winch);
   snprintf(g_dash.tty, sizeof(g_dash.tty), "%s", tty);
   g_dash.speed = speed;
   g_dash.port = port;
@@ -542,6 +558,24 @@ void dashboard_init(const char *tty, int speed, int port, int modem_count) {
   g_dash.dsr_on = 1;
   g_dash.serial_fd = -1;
   g_dash.enabled = 1;
+}
+
+/* Headless init for the web dashboard (-H) used WITHOUT the terminal dashboard
+ * (-M): populate/collect stats + traffic in g_dash without taking over the
+ * terminal (no raw mode, no rendering, no SIGWINCH). If -M already ran the full
+ * init, this is a no-op. */
+void dashboard_init_headless(const char *tty, int speed, int port, int modem_count) {
+  if(g_dash.enabled) return;
+  dashboard_init_state(tty, speed, port, modem_count);
+}
+
+/* True once either the terminal (-M) or web (-H) dashboard has initialised, so
+ * the I/O trace path knows whether to capture traffic into g_dash. */
+int dashboard_capture_active(void) { return g_dash.enabled; }
+
+void dashboard_init(const char *tty, int speed, int port, int modem_count) {
+  dashboard_init_state(tty, speed, port, modem_count);
+  signal(SIGWINCH, handle_winch);
   term_raw_on();
   render();
 }
@@ -741,7 +775,10 @@ static void do_unblock(void) {
 }
 
 void dashboard_check_keyboard(void) {
-  if(!g_dash.enabled) return;
+  /* Interactive keys only make sense when the terminal dashboard owns the tty
+   * in raw mode. In headless (web-only) mode, never read stdin — a blocking
+   * read would stall the main loop. */
+  if(!g_dash.enabled || !g_term_raw) return;
   char ch;
   while(read(STDIN_FILENO, &ch, 1) == 1) {
     switch(ch) {

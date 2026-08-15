@@ -1,5 +1,5 @@
 .\"                                      Hey, EMACS: -*- nroff -*-
-.TH TCPSER 1 "July 2026" "tcpser 1.3.1"
+.TH TCPSER 1 "August 2026" "tcpser 1.4.0"
 .SH NAME
 tcpser \- Hayes compatible modem emulator over TCP/IP
 .SH SYNOPSIS
@@ -157,10 +157,12 @@ Live full-screen ASCII traffic monitor on stderr (colour).  Distinct from
 \fB\-t M\fP, which only enables modem-output tracing.
 .TP
 .BI \-H " port"
-Start the HTTP web dashboard and Prometheus \fB/metrics\fP endpoint on the
-given port.  Binds to 127.0.0.1 by default; set \fBTCPSER_DASH_BIND\fP to
-change the bind address and \fBTCPSER_DASH_TOKEN\fP to require a
-\fB?token=\fP value on every request.
+Start the HTTP web dashboard (live stats, connection history, and a live
+traffic feed) and Prometheus \fB/metrics\fP endpoint on the given port.  Works
+without \fB\-M\fP.  Binds to 127.0.0.1 by default; set \fBTCPSER_DASH_BIND\fP to
+change the bind address, \fBTCPSER_DASH_TOKEN\fP to require a \fB?token=\fP
+value on every request, and \fBTCPSER_DASH_TRAFFIC=1\fP to include payload
+content (which may contain what callers type) in the traffic feed.
 .TP
 .BI \-e " url"
 Webhook URL notified on CONNECTED, DISCONNECTED, GATE_FAIL and IP_BLOCKED
@@ -233,6 +235,12 @@ Bind address for the \fB\-H\fP web dashboard (default 127.0.0.1).  Set to
 .B TCPSER_DASH_TOKEN
 If set, the \fB\-H\fP web dashboard requires \fB?token=<value>\fP on every
 request (constant-time comparison).
+.TP
+.B TCPSER_DASH_TRAFFIC
+If set to 1, the \fB\-H\fP web dashboard's live traffic feed includes an ASCII
+preview of payload CONTENT (otherwise only direction and byte counts are
+shown).  Payloads can contain what callers type into the BBS, so only enable
+this behind localhost and a token.
 .TP
 .B TCPSER_PEER_IP
 Set by tcpser in the environment of the \fB\-E\fP gate-success script; holds

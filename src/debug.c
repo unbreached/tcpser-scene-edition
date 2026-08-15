@@ -143,7 +143,11 @@ void log_trace(int type, unsigned char *line, int len) {
  * Activated by -M flag (TRACE_MONITOR).
  */
 void log_monitor(int type, unsigned char *data, int len) {
-  if(!(trace_flags & TRACE_MONITOR) || len == 0) return;
+  /* Capture traffic into g_dash whenever ANY dashboard is active — the
+   * terminal monitor (-M, TRACE_MONITOR) or the web dashboard (-H, which runs
+   * a headless g_dash). dashboard_event() itself no-ops if neither is up. */
+  if(len == 0) return;
+  if(!(trace_flags & TRACE_MONITOR) && !dashboard_capture_active()) return;
   dashboard_event(type, data, len);
 }
 
