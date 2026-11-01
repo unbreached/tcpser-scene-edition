@@ -94,6 +94,8 @@ static void term_size(int *w, int *h) {
 
 static int g_quit_requested = 0;
 static char g_confirm = 0;     /* pending destructive hotkey awaiting y/N */
+static time_t g_confirm_at = 0;
+#define CONFIRM_TIMEOUT 10     /* seconds before a pending y/N prompt auto-cancels */
 void term_restore(void);
 
 static void term_raw_on(void) {
@@ -751,6 +753,13 @@ void dashboard_connection_closed(void) {
 
 void dashboard_render(void) {
   if(!g_dash.enabled || g_dash_paused) return;
+  if(g_confirm) {
+    /* Keep the y/N prompt on screen instead of repainting over it; give up
+     * waiting after CONFIRM_TIMEOUT so an unanswered prompt cannot freeze
+     * the display. */
+    if(time(NULL) - g_confirm_at < CONFIRM_TIMEOUT) return;
+    g_confirm = 0;
+  }
   pthread_mutex_lock(&dash_mutex); render(); pthread_mutex_unlock(&dash_mutex);
 }
 
@@ -791,6 +800,7 @@ int dashboard_quit_requested(void) { return g_quit_requested; }
 
 static void ask_confirm(char key, const char *what) {
   g_confirm = key;
+  g_confirm_at = time(NULL);
   /* Overwrite the line under the hotkey bar with the prompt. */
   fprintf(stderr, "\r" E "2K" " " BOLD C_LYEL "%s? [y/N]" RST " ", what);
   fflush(stderr);
