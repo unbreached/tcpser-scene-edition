@@ -1,649 +1,532 @@
-# TCPSER 1.4.0 - ELiTE RETRO BBS EDiTiON
+<h1 align="center">TCPSER · ELiTE RETRO BBS EDiTiON</h1>
 
-**GENESiS-PROJECT // HARDENED TCPSER FOR FRoZEN FLoPPY BBS**
+<p align="center">
+  <b>Put your Commodore 64 BBS on the Internet.</b><br>
+  A hardened fork of <code>tcpser</code> that turns a USB-serial port into a Hayes modem over TCP/IP,<br>
+  with a bot gate, IP blocklist, live dashboards, BBS watchdog and an RS232 adapter analyzer.
+</p>
 
-Custom fork of tcpser with security hardening, RS232 adapter diagnostics,
-live dashboard, BBS recovery watchdog, and C64 optimizations. Transforms
-a serial port into a Hayes-compatible modem over TCP/IP.
+<p align="center">
+  <a href="LICENSE"><img alt="License: GPL-2.0" src="https://img.shields.io/badge/license-GPL--2.0-blue"></a>
+  <img alt="Version 1.4.1" src="https://img.shields.io/badge/version-1.4.1-ff2bd6">
+  <img alt="Language: C" src="https://img.shields.io/badge/language-C-29f6ff">
+  <img alt="Platforms" src="https://img.shields.io/badge/runs%20on-Linux%20%7C%20Raspberry%20Pi%20%7C%20macOS%20%7C%20BSD-26ff8f">
+  <img alt="Hardware" src="https://img.shields.io/badge/C64-SwiftLink%20%7C%20Turbo232%20%7C%20GLINK232%20%7C%20userport-ffb020">
+</p>
 
-Modded/Improved by David Jacoby, david@unbreached.se
+<p align="center">
+  <img src="docs/img/web-dashboard.png" alt="tcpser web dashboard: live statistics, connection history and live traffic" width="900">
+</p>
 
-Designed for hosting Commodore 64 BBS systems on the Internet with
-SwiftLink, Turbo232, GLINK232, and userport RS232 adapters.
+<p align="center"><sub>GENESiS-PROJECT // built for the FRoZEN FLoPPY BBS · modded by David Jacoby (david@unbreached.se) · original tcpser by Jim Brain</sub></p>
 
 ---
 
-## Quick Start
+## Table of contents
+
+- [How it works](#how-it-works)
+- [Quick start](#quick-start)
+- [Features](#features)
+- [Dashboards](#dashboards)
+- [Security](#security)
+- [BBS recovery](#bbs-recovery)
+- [Hardware, cabling and the analyzer](#hardware-cabling-and-the-analyzer)
+- [Running as a service](#running-as-a-service)
+- [Reference](#reference) (all options, environment variables, AT commands, S-registers, logs, signals)
+- [Troubleshooting](#troubleshooting)
+- [Documentation, structure, license](#documentation)
+
+---
+
+## How it works
+
+tcpser sits between the Internet and the serial port. To the caller it is a telnet
+host; to the BBS it is a Hayes modem that rings, answers `ATA`, raises carrier and
+drops it on hang-up. Everything a caller sends is checked by the gate, rate limiter
+and blocklist **before** a single byte reaches the serial port.
+
+```mermaid
+flowchart LR
+    caller["Caller<br/>(telnet / SyncTERM / CGTerm)"]
+    subgraph tcpser["tcpser"]
+        direction LR
+        gate["Bot gate<br/>BACKSPACE×2 or password<br/>rate limit · blocklist · allowlist"]
+        modem["Hayes modem emulation<br/>RING · ATA · CONNECT · DCD/DTR<br/>AT commands · S-registers"]
+        gate --> modem
+        watch["BBS watchdog<br/>DTR pulse / BREAK"]
+        modem -.-> watch
+    end
+    serial["USB-serial<br/>+ RS232 cartridge"]
+    bbs["C64 BBS<br/>(CBase, Image, Color 64 …)"]
+    caller -- "TCP :6400" --> gate
+    modem -- "2400–38400 baud" --> serial --> bbs
+    tcpser -.-> tui["Terminal dashboard (-M)"]
+    tcpser -.-> web["Web dashboard + /metrics (-H)"]
+    tcpser -.-> hooks["Webhooks (-e) · CSV log (-O) · gate hook (-E)"]
+```
+
+Flow of one call:
+
+```mermaid
+sequenceDiagram
+    participant C as Caller
+    participant T as tcpser
+    participant B as C64 BBS
+    C->>T: TCP connect
+    T->>C: PETSCII banner (-P)
+    C->>T: BACKSPACE BACKSPACE (or password)
+    T->>C: ACCESS GRANTED (-G)
+    T->>B: RING
+    B->>T: ATA
+    T->>B: CONNECT 2400 + DCD high
+    C-->>B: session (telnet NVT negotiated, PETSCII passed through)
+    B->>T: ATH0 / DTR drop
+    T->>C: NO CARRIER, socket closed
+```
+
+---
+
+## Quick start
 
 ```bash
-# 1. Build
+# 1. Build (gcc + make; Linux, macOS, Raspberry Pi OS, BSD)
 make
 
-# 2. Run the RS232 analyzer to find correct settings
+# 2. Find the right settings for your cartridge and cable
 ./tcpser -d /dev/ttyUSB0 -s 2400 -Z
 
-# 3. Run with the recommended settings
+# 3. Host the BBS on TCP 6400 with the BACKSPACE×2 bot gate
 ./tcpser -d /dev/ttyUSB0 -s 2400 -p 6400 -x
 
-# 4. Run with dashboard, logging, and connection log
-./tcpser -d /dev/ttyUSB0 -s 2400 -p 6400 -x -M \
-  -L tcpser.log -O connections.csv
+# 4. Same, with the terminal dashboard, log file and connection log
+./tcpser -d /dev/ttyUSB0 -s 2400 -p 6400 -x -M -L tcpser.log -O connections.csv
 ```
+
+Call yourself from another machine with `telnet <host> 6400` (or SyncTERM / CGTerm
+for proper PETSCII), press BACKSPACE twice, and your BBS should answer.
+
+**Install system-wide** with `sudo make install` (binary to `/usr/local/bin`, man page,
+PETSCII screens and service files to `/usr/local/share/tcpser/`; override with
+`PREFIX=`). `sudo make uninstall` removes the binary and man page.
+
+**Requirements:** a USB-serial adapter (FTDI recommended) and a C64 RS232 cartridge:
+SwiftLink-232, CMD Turbo232, GGLABS GLINK232, or a userport adapter with a MAX232
+level shifter. No libraries beyond libc and pthreads.
 
 ---
 
-## Requirements
+## Features
 
-- GCC and Make (any POSIX system: Linux, macOS, BSD)
-- A USB-serial adapter (FTDI recommended)
-- A C64 RS232 cartridge: SwiftLink-232, CMD Turbo232, GGLABS GLINK232,
-  or a userport adapter with level shifter (MAX232)
-
----
-
-## Build & Install
-
-### Building
-
-| OS                  | Command                    |
-|---------------------|----------------------------|
-| Linux / macOS       | `make`                     |
-| Solaris             | `make -f Makefile.solaris`  |
-| BSD                 | `gmake`                    |
-
-### Installing
-
-```bash
-sudo make install
-```
-
-Installs to `/usr/local` by default:
-- Binary: `/usr/local/bin/tcpser`
-- Man page: `/usr/local/share/man/man1/tcpser.1`
-- Data files: `/usr/local/share/tcpser/` (SEQ screens, blocklist, service files)
-
-Override the prefix:
-```bash
-sudo make install PREFIX=/opt/tcpser
-```
-
-### Uninstalling
-
-```bash
-sudo make uninstall
-```
+| | |
+|---|---|
+| 🛡️ **Bot gate** | Callers must press BACKSPACE twice (`-x`) or type a password (`-k`) before the modem rings. Scanners and bots never touch the serial port. |
+| 🚫 **Blocklist / allowlist** | Persistent IP blocklist with automatic blocking after N gate failures, per-IP rate limiting, and an allowlist for friends that skips the gate. |
+| 📟 **Terminal dashboard** | Full-screen monitor (`-M`): link state, activity LEDs, hex + ASCII traffic, connection history, hotkeys to hang up or block. |
+| 🌐 **Web dashboard + metrics** | `-H` serves a live page (Server-Sent Events), a JSON API and a Prometheus `/metrics` endpoint. Loopback and token-protected by default. |
+| 🔔 **Webhooks** | Discord, Slack, ntfy or any JSON endpoint on connect, disconnect, gate failure and block. Secrets never appear in `ps`. |
+| 🐕 **BBS watchdog** | Detects a hung BBS after an ungraceful disconnect and pulses DTR / sends BREAK so the 6551 sees carrier loss. Max-session timer against line hogging. |
+| 🔌 **USB resilience** | Survives the adapter disappearing: waits for the device and reopens it, no restart. |
+| 🩺 **RS232 analyzer** | `-Z` detects the baud rate from the BBS init, maps DTR/RTS wiring, verifies an `OK` exchange and recommends flags. A C64-side companion lives in [`c64/`](c64/). |
+| 🎨 **PETSCII screens** | Pre-connect banner and access-granted screens (`.seq`), with random banner rotation from a directory. |
+| 📈 **Logging** | CSV connection log (mode 0600), persisted counters, log rotation on SIGHUP, hex traces per direction. |
+| 🖧 **Multi-line** | Several `-d`/`-v` modems behind one or more TCP ports (`-p 6400:0,1 -p 6401:2`). |
+| 🔒 **Hardened build** | Stack protector, FORTIFY, PIE, full RELRO; constant-time secret compares; fuzzed parsers; no shell in any exec path. |
 
 ---
 
-## Usage
+## Dashboards
 
-```
-tcpser -d <device> -s <speed> [options...]
-tcpser -v <port>   -s <speed> [options...]
-```
+<table>
+<tr>
+<td width="50%" valign="top">
 
-Run `tcpser -h` for the full option list, grouped by category.
+**Terminal (`-M`)** — runs on stderr, over SSH, on a Pi. Link state and LEDs,
+live hex/ASCII traffic in both directions, connection history, blocklist
+overlay. Destructive hotkeys ask `y/N`.
 
-### All Options
+| Key | Action |
+|-----|--------|
+| `H` | Hang up the current caller |
+| `R` | Reset the modem (same as `ATZ`) |
+| `B` | Show the IP blocklist |
+| `U` | Clear all timed blocks |
+| `S` | Back to the dashboard / refresh |
+| `Q` | Quit (hangs up callers, saves stats) |
 
-**Serial Port:**
-| Flag | Description |
-|------|-------------|
-| `-d <device>` | Serial device (e.g. /dev/ttyUSB0) |
-| `-v <port>` | Virtual RS232 via TCP (ip232 mode) |
-| `-s <speed>` | Serial port speed (default: 38400) |
-| `-S <speed>` | Speed reported in CONNECT message |
-| `-I` | Invert DCD pin |
-| `-i <string>` | Modem init string (omit AT prefix) |
-| `-b <list>` | On-connect caller speed menu (requires CBase). `list` is comma-separated `speed=pokeval` pairs; the caller picks a speed, tcpser sends `POKE 838,<pokeval>` to CBase and retunes its own serial port to match. E.g. `-b 2400=6,9600=8,38400=10` (replace pokevals with your CBase POKE 838 values) |
+</td>
+<td width="50%" valign="top">
 
-**Network:**
-| Flag | Description |
-|------|-------------|
-| `-p <port>` | TCP listen port (default: 6400) |
-| `-n <num>=<addr>` | Phone book entry |
-| `-D <addr:port>` | Direct connection |
+**Web (`-H port`)** — works without `-M`. Live statistics, connection history
+and a live traffic feed, updated over Server-Sent Events.
 
-**Security / Bot Gate:**
-| Flag | Description |
-|------|-------------|
-| `-x` | Require BACKSPACE x2 before connect |
-| `-k <password>` | Require password before connect (`-k env:VAR` reads it from `$VAR`, hidden from `ps`) |
-| `-W <seconds>` | Gate timeout (default: 20, max: 300) |
-| `-F <count>` | Failures before permanent block (default: 3) |
-| `-P <file|dir>` | Pre-connect banner (file or directory for rotation) |
-| `-G <file>` | Access granted screen |
-| `-E <command>` | Execute on successful gate (async) |
+| Endpoint | Returns |
+|----------|---------|
+| `/` | the dashboard page |
+| `/api/status` | JSON: stats, history, traffic |
+| `/api/events` | SSE stream (updates every 5 s) |
+| `/metrics` | Prometheus text (`tcpser_*`) |
 
-**Event Files:**
-| Flag | Event | Sent to |
-|------|-------|---------|
-| `-a <file>` | Answer | Serial (local) |
-| `-A <file>` | Answer | TCP (remote) |
-| `-c <file>` | Connect | Serial (local) |
-| `-C <file>` | Connect | TCP (remote) |
-| `-N <file>` | No answer | TCP (remote) |
-| `-B <file>` | All busy | TCP (remote) |
-| `-T <file>` | Inactivity timeout | TCP (remote) |
+Binds `127.0.0.1`. See [Security](#security) before exposing it.
 
-**Logging:**
-| Flag | Description |
-|------|-------------|
-| `-l <level>` | Log level: 0=none 1=fatal .. 7=trace |
-| `-L <file>` | Log to file (supports SIGHUP rotation) |
-| `-O <file>` | Connection log (CSV: time,ip,result,duration,bytes; created mode 0600) |
-| `-Y <file>` | Statistics file (persist counters across restarts) |
-| `-t <flags>` | Trace: m/M=modem s/S=serial i/I=IP |
+</td>
+</tr>
+</table>
 
-**BBS Recovery:**
-| Flag | Description |
-|------|-------------|
-| `-w <seconds>` | BBS watchdog timeout (default: 120, 0=off) |
-| `-m <minutes>` | Max session time (default: 0=unlimited) |
+<p align="center">
+  <img src="docs/img/terminal-dashboard.png" alt="tcpser terminal dashboard: link status, statistics, hex traffic and connection history" width="900">
+</p>
 
-**Monitoring & Notifications:**
-| Flag | Description |
-|------|-------------|
-| `-M` | Live terminal dashboard (full-screen, on stderr) |
-| `-H <port>` | Web dashboard + `/metrics` (HTTP; binds 127.0.0.1 by default) |
-| `-e <url>` | Webhook on events (Discord/Slack/ntfy/JSON POST; repeatable) |
+---
 
-**Tools:**
-| Flag | Description |
-|------|-------------|
-| `-Z` | RS232 analyzer mode |
-| `-V` | Print version and exit |
-| `-h` | Help |
+## Security
 
-### Common Examples
+Everything below runs **before** any byte reaches the serial port.
 
-**Basic BBS hosting:**
+| Mechanism | Flag / setting | Notes |
+|-----------|----------------|-------|
+| BACKSPACE×2 gate | `-x` | accepts 0x08, 0x14 (PETSCII DEL) and 0x7F |
+| Password gate | `-k secret` or `-k env:VAR` | PETSCII/ASCII normalized, constant-time compare, guesses capped and throttled per connection; `env:` keeps it out of `ps` |
+| Gate timeout / failures | `-W 20` · `-F 3` | after `-F` failures the IP is blocked permanently |
+| Rate limiting | built in | 5 s minimum between attempts from one IP |
+| Blocklist | `TCPSER_BLOCKLIST=/var/lib/tcpser/tcpser.blocklist` | one IPv4 per line, `#` comments, atomic append, reloaded on change |
+| Allowlist | `TCPSER_ALLOWLIST=…` | trusted IPs skip gate, rate limit and blocklist |
+| Gate hook | `-E gate_success_log` | a script **name** in `/usr/local/tcpser/scripts/`; runs detached, caller IP in `TCPSER_PEER_IP`; see [`samples/scripts/README.md`](samples/scripts/README.md) |
+| Web dashboard exposure | `TCPSER_DASH_BIND` · `TCPSER_DASH_TOKEN` · `TCPSER_DASH_TRAFFIC` | loopback by default; a token is required to expose it; payload preview is opt-in because it can contain what callers type |
+| ip232 (`-v`) listener | `TCPSER_IP232_BIND` | the emulator side is the *trusted* modem channel: loopback by default, never expose it unprotected |
+
 ```bash
-tcpser -d /dev/ttyUSB0 -s 2400 -p 6400 -x
+# Expose the dashboard on the LAN with a random token
+export TCPSER_DASH_BIND=0.0.0.0
+export TCPSER_DASH_TOKEN=$(head -c16 /dev/urandom | xxd -p)
+tcpser -d /dev/ttyUSB0 -s 2400 -p 6400 -x -H 8080
+# → http://host:8080/?token=<value>
 ```
 
-**Production BBS with all features:**
-```bash
-tcpser -d /dev/ttyUSB0 -s 2400 -p 6400 \
-  -x -W 30 \
-  -P data/prelogin.seq \
-  -G data/accessgranted.seq \
-  -O /var/log/tcpser-connections.csv \
-  -L /var/log/tcpser.log -l 4 \
-  -w 120 -m 60 -M
+Deployment hardening (unprivileged systemd unit, nginx + TLS, fail2ban jails for the
+modem port and the dashboard, firewall rules) is in [`samples/`](samples/README.md)
+and [`docs/SECURITY_GUIDE.md`](docs/SECURITY_GUIDE.md). The full 2026-11 audit, with
+what was found and fixed, is in [`docs/AUDIT-2026-11-01.md`](docs/AUDIT-2026-11-01.md).
+
+---
+
+## BBS recovery
+
+| | |
+|---|---|
+| **Watchdog** (`-w 120`, `0` = off) | If no serial data arrives from the BBS within the timeout after a disconnect, tcpser pulses DTR (500 ms) so the 6551 reports carrier loss; after three pulses it sends a serial BREAK. Resets when the BBS talks. Works with CBase's `chkcarr`. |
+| **Consecutive no-answer** | Three callers in a row getting no answer triggers a DTR pulse. |
+| **Max session** (`-m 60`) | Disconnects a caller after N minutes. `0` = unlimited. |
+| **USB reconnect** | If the adapter vanishes, the current caller gets NO CARRIER and tcpser waits for the device node to come back and reopens it (warning once a minute). |
+| **DTR grace** | DTR drops in the first seconds after CONNECT are ignored so a BBS reset sequence cannot hang up a fresh call. |
+| **ATZ keeps your wiring** | `ATZ` / `AT&F` restore the profile given with `-i` and `-I` (inverted DCD, `&C0`, `&K3`), not factory defaults. |
+
+---
+
+## Hardware, cabling and the analyzer
+
+### Supported adapters
+
+| Adapter | Chip | Max baud |
+|---------|------|----------|
+| SwiftLink-232 | 6551 ACIA | 38400 |
+| CMD Turbo232 | 6551 + extension register | 230400 |
+| GGLABS GLINK232 | SwiftLink-compatible (3 BOM variants) | 38400 |
+| Userport adapters | software UART | 300–2400 |
+| UP9600 mod | CIA shift register | 9600 |
+
+All 6551-based cartridges **disable their receiver while DCD is inactive**. tcpser
+drives DCD from the PC's DTR line and asserts it on carrier. If your BBS expects DCD
+while idle, pass `-i "&C0"`; if the adapter inverts it, pass `-I`.
+
+### Cable
+
+```
+   PC (USB-serial)        C64 cartridge
+        TXD ─────────────── RXD
+        RXD ─────────────── TXD
+        RTS ─────────────── CTS
+        CTS ─────────────── RTS
+        DTR ─────────────── DCD      ← tcpser signals carrier here
+        DCD ─────────────── DTR
+        GND ─────────────── GND
 ```
 
-**Multi-line BBS (two modems, one TCP port):**
-```bash
-tcpser -d /dev/ttyUSB0 -s 2400 -d /dev/ttyUSB1 -s 2400 -p 6400 -x
-```
+A 3-wire cable (TX/RX/GND) works with `-i "&D0"`, but tcpser then cannot see the
+C64 hanging up.
 
-**Analyzer mode (diagnose RS232 adapter):**
+### Analyzer (`-Z`)
+
 ```bash
 tcpser -d /dev/ttyUSB0 -s 2400 -Z
 ```
 
----
+| Step | You | It |
+|------|-----|----|
+| 1 | start (or restart) the BBS so it sends its AT init | listens at each baud rate and picks the one that yields valid AT commands |
+| 2 | nothing | toggles DTR/RTS and watches which inputs move: detects null-modem cross-wiring and 3-wire cables |
+| 3 | nothing | sends `OK` and checks the BBS accepts it |
+| report | | infers the cartridge type and prints a recommended command line |
 
-## Live Dashboard (-M)
+Flow control and parity are not probed; the `&K` suggestion is a heuristic to verify.
 
-Full-screen terminal dashboard with:
-- Modem activity LEDs (RX/TX for Caller, BBS, Modem)
-- Hex + ASCII traffic view with direction indicators
-- Connection history with color-coded results
-- Live statistics (connections, blocked IPs, bytes, DCD/DSR state)
-- Uptime counter and peer connection duration
-
-### Dashboard Hotkeys
-
-| Key | Action |
-|-----|--------|
-| `H` | Force hangup (disconnect current caller) |
-| `R` | Factory reset modem (AT&F equivalent) |
-| `S` | Refresh display |
-| `B` | Show IP blocklist |
-| `U` | Clear all timed blocks |
-| `Q` | Quit tcpser |
-
-All hotkey actions are thread-safe (sent through the bridge pipe protocol).
+<p align="center">
+  <img src="c64/shot.png" alt="TCPSER LINK ANALYZER running on the C64" width="384"><br>
+  <sub><a href="c64/">c64/tcpser-link.prg</a>: the C64-side companion shows the 6551 status and command registers live and toggles DTR/RTS so you can see what tcpser sees.</sub>
+</p>
 
 ---
 
-## BBS Recovery
+## Running as a service
 
-### Watchdog (-w)
+**Linux (systemd)** — the unit runs tcpser as an unprivileged user with a writable
+state directory for the blocklist and stats:
 
-Detects when the BBS is hung after a caller disconnects ungracefully
-(killed terminal, lost network). If no serial data arrives from the BBS
-within the timeout (default: 120 seconds), tcpser toggles DTR/DCD to
-force the 6551 ACIA to signal carrier loss to the BBS software.
+```bash
+sudo useradd --system --no-create-home --shell /usr/sbin/nologin -G dialout tcpser
+sudo cp /usr/local/share/tcpser/tcpser.service /etc/systemd/system/
+sudo systemctl edit --full tcpser      # device, speed, port, gate on the ExecStart line
+sudo systemctl enable --now tcpser
+```
 
-- 1st-3rd attempt: DTR toggle (500ms low pulse)
-- After 3 failed toggles: sends serial BREAK signal
-- Resets when any serial data arrives from the BBS
+Secrets (dashboard token, `-k env:TCPSER_GATE_PASSWORD`) go in `/etc/tcpser/tcpser.env`.
+The hardened variant and an installer are in [`samples/systemd/`](samples/systemd/) and
+[`samples/deployment/install_secure.sh`](samples/deployment/install_secure.sh).
 
-Works with CBASE's `chkcarr` routine which polls DCD via the 6551
-status register.
+**macOS (launchd)**
 
-### Consecutive No-Answer Detection
+```bash
+sudo cp /usr/local/share/tcpser/com.tcpser.bbs.plist /Library/LaunchDaemons/   # edit paths first
+sudo launchctl load /Library/LaunchDaemons/com.tcpser.bbs.plist
+```
 
-If 3 consecutive callers receive "No Answer" (BBS didn't pick up),
-tcpser assumes the BBS is stuck and forces a DTR toggle to recover.
-
-### Max Session Time (-m)
-
-Disconnects callers after a configurable number of minutes. Useful as
-a safety net to prevent line hogging on a single-line BBS. Set to 0
-(default) for unlimited.
-
-### USB Serial Reconnect
-
-If the USB-serial adapter disconnects (glitch, cable bump), tcpser
-automatically waits up to 60 seconds for the device to reappear and
-reopens it. No manual restart needed.
+Both restart tcpser automatically. `kill -HUP` reopens the log file (logrotate),
+`kill -USR1` dumps statistics.
 
 ---
 
-## Connection Log (-O)
+## Reference
 
-Append-only CSV log of all connection events:
+<details>
+<summary><b>All command-line options</b> (also <code>tcpser -h</code> and <code>man tcpser</code>)</summary>
+
+Options are validated at startup: a bad value prints a message and exits with code 2.
+
+**Serial port**
+
+| Flag | Description |
+|------|-------------|
+| `-d <device>` | Serial device, e.g. `/dev/ttyUSB0`. Repeat for more lines |
+| `-v <port>` | Virtual RS232 over TCP (ip232 / VICE). Binds `127.0.0.1` |
+| `-s <speed>` | Serial speed (default 38400; standard rates 300–230400) |
+| `-S <speed>` | Speed reported in `CONNECT` (default = `-s`) |
+| `-i <string>` | Modem init string without `AT`, e.g. `-i "&C0&K3S0=1"` |
+| `-I` | Invert the DCD line |
+| `-b <list>` | On-connect caller speed menu for CBase: `-b 2400=6,9600=8,38400=10` (`speed=POKE 838 value`) |
+
+**Network**
+
+| Flag | Description |
+|------|-------------|
+| `-p <port>[:modems]` | TCP listen port (default 6400, all modems); `-p 23:0,1 -p 64128:2` |
+| `-n <number>=<host:port>` | Phone book entry for `ATD<number>` |
+| `-D <host:port>` | Direct connection (`:` alone = receiver mode) |
+
+**Security / bot gate**
+
+| Flag | Description |
+|------|-------------|
+| `-x` | Require BACKSPACE twice before the modem rings |
+| `-k <password>` | Require a password (`-k env:VAR` reads it from the environment) |
+| `-W <seconds>` | Gate timeout (default 20, max 300) |
+| `-F <count>` | Gate failures before a permanent block (default 3) |
+| `-P <file\|dir>` | Pre-connect PETSCII banner; a directory rotates banners randomly |
+| `-G <file>` | Access-granted screen |
+| `-E <name>` | Gate-success hook: script name in `/usr/local/tcpser/scripts/` |
+
+**Event screens** (PETSCII `.seq` files sent when the event happens)
+
+| Flag | Event | Sent to |
+|------|-------|---------|
+| `-a` / `-A` | answer | C64 / caller |
+| `-c` / `-C` | connect | C64 / caller |
+| `-N` | no answer | caller |
+| `-B` | all lines busy | caller |
+| `-T` | inactivity timeout | caller |
+
+**Logging and monitoring**
+
+| Flag | Description |
+|------|-------------|
+| `-l <0-7>` | Log level: 0 none, 1 fatal … 4 info … 7 trace |
+| `-L <file>` | Log file (SIGHUP reopens it) |
+| `-t <flags>` | Hex traces: `m`/`M` modem in/out, `s`/`S` serial, `i`/`I` IP |
+| `-O <file>` | Connection CSV log (created mode 0600) |
+| `-Y <file>` | Persist counters across restarts |
+| `-M` | Terminal dashboard (needs a tty) |
+| `-H <port>` | Web dashboard + `/metrics` |
+| `-e <url>` | Webhook (repeatable, up to 8) |
+
+**Recovery and tools**
+
+| Flag | Description |
+|------|-------------|
+| `-w <seconds>` | BBS watchdog (default 120, 0 = off, max 600) |
+| `-m <minutes>` | Max session time (default 0 = unlimited) |
+| `-Z` | RS232 analyzer (needs `-d`) |
+| `-V` / `-h` | Version / help |
+
+`-s`, `-S`, `-i` and the gate settings propagate to later `-d`/`-v` modems.
+
+</details>
+
+<details>
+<summary><b>Environment variables</b></summary>
+
+| Variable | Effect | Default |
+|----------|--------|---------|
+| `TCPSER_BLOCKLIST` | blocklist file | `tcpser.blocklist` in the working directory |
+| `TCPSER_ALLOWLIST` | allowlist file | `tcpser.allowlist` in the working directory |
+| `TCPSER_DASH_BIND` | web dashboard bind address | `127.0.0.1` |
+| `TCPSER_DASH_TOKEN` | require `?token=…` on the dashboard | none |
+| `TCPSER_DASH_TRAFFIC` | `1` = include payload text in the traffic feed | off |
+| `TCPSER_IP232_BIND` | bind address of the `-v` listener | `127.0.0.1` |
+
+</details>
+
+<details>
+<summary><b>AT commands and S-registers</b></summary>
+
+| Command | Effect |
+|---------|--------|
+| `ATA` | answer |
+| `ATD<number>` / `ATDL` | dial (TCP connect) / redial |
+| `ATH0` / `ATH1` | hang up / off-hook |
+| `ATO` | back to online data mode |
+| `ATE0/1` · `ATQ0/1` · `ATV0/1` | echo · quiet · numeric/verbose |
+| `ATX0`–`ATX4` · `ATW0`–`ATW2` | result-code level · connect message format |
+| `ATZ` · `AT&F` | restore the operator profile (`-i`, `-I`) |
+| `AT&C0/1` | DCD always on / follows carrier |
+| `AT&D0/1/2` | DTR drop: ignore / command mode / hang up |
+| `AT&K0/3/4` | flow control: none / RTS-CTS / XON-XOFF |
+| `ATS<n>=<v>` · `ATS<n>?` | set / query S-register (0–255) |
+| `A/` · `+++` | repeat last command · escape with guard time |
+
+| Register | Purpose | Default |
+|----------|---------|---------|
+| S0 | rings before auto-answer (0 = never) | 0 |
+| S2 | escape character | 43 (`+`) |
+| S3 / S4 / S5 | CR / LF / backspace | 13 / 10 / 8 |
+| S7 | carrier wait (s) | 50 |
+| S12 | escape guard time (1/50 s) | 50 |
+| S30 | inactivity timeout (10 s units) | 0 |
+
+</details>
+
+<details>
+<summary><b>Connection log, statistics, signals, telnet, ip232</b></summary>
+
+**Connection log** (`-O`): append-only CSV, one line per event.
 
 ```csv
 timestamp,ip,result,duration,bytes_in,bytes_out
 2026-04-03 14:30:22,192.168.1.50,CONNECTED,0,0,0
 2026-04-03 14:35:10,192.168.1.50,HANGUP,288,4096,8192
-2026-04-03 14:36:01,10.0.0.5,BLOCKED,0,0,0
 2026-04-03 14:37:15,10.0.0.99,GATE_FAIL,0,0,0
 ```
 
-Result types: `CONNECTED`, `HANGUP`, `BLOCKED`, `RATE_LIMITED`, `GATE_FAIL`, `NO_ANSWER`
+Results: `CONNECTED`, `HANGUP`, `BLOCKED`, `RATE_LIMITED`, `GATE_FAIL`, `NO_ANSWER`.
 
----
+**Statistics** (`-Y file`): counters are saved every 60 s and on shutdown, restored on start.
 
-## IP Allowlist
-
-Trusted IPs that skip the blocklist, rate limiter, and gate entirely.
-One IP per line, comments with `#`.
-
-- Default location: `data/tcpser.allowlist` or `tcpser.allowlist`
-- Override: `export TCPSER_ALLOWLIST=/path/to/file`
-
-```
-# Friends of the BBS
-192.168.1.100
-10.0.0.50
-```
-
----
-
-## IP Blocklist
-
-Persistent file-based blocklist with automatic reload:
-- Default location: `data/tcpser.blocklist`
-- Override: `export TCPSER_BLOCKLIST=/path/to/file`
-- Atomic append with file locking (no duplicates)
-- Auto-blocks after configurable gate failures (`-F`)
-- Auto-reloads every 10 seconds when file changes
-- Comments supported (`#` prefix)
-- View from dashboard with `B`, clear timed blocks with `U`
-
----
-
-## Statistics Persistence
-
-Connection statistics (total connections, blocked, gate pass/fail,
-bytes in/out) are persisted **only when you pass `-Y <file>`**. With
-`-Y` set, counters are auto-saved every 60 seconds and on shutdown, and
-restored on startup so they survive restarts. Without `-Y`, no stats
-file is written or read.
-
-```bash
-tcpser -d /dev/ttyUSB0 -s 2400 -p 6400 -M -Y data/tcpser.stats
-```
-
----
-
-## Web Dashboard (-H) and Metrics
-
-`-H <port>` starts a read-only HTTP dashboard (mobile-friendly, SOC/NOC
-styled) plus a Prometheus/OpenMetrics endpoint. It works on its own —
-you do **not** need `-M` — and includes a **live traffic feed**:
-
-- `GET /`            — HTML dashboard (live stats, connection history, live traffic)
-- `GET /api/status`  — JSON status (stats + history + traffic)
-- `GET /api/events`  — Server-Sent Events stream (auto-updates the page)
-- `GET /metrics`     — Prometheus text exposition (`tcpser_*` counters)
-
-**Security:** the dashboard exposes caller IP addresses and stats, so it
-binds to `127.0.0.1` by default. The live traffic feed shows direction and
-byte counts always, but the **payload content preview is opt-in** because it
-can contain what callers type into the BBS (even passwords). Control exposure,
-auth, and content with env vars:
-
-| Variable | Effect | Default |
-|----------|--------|---------|
-| `TCPSER_DASH_BIND`    | Bind address (`0.0.0.0` to expose on the LAN/Internet) | `127.0.0.1` |
-| `TCPSER_DASH_TOKEN`   | Require `?token=<value>` on every request (constant-time check) | _(none)_ |
-| `TCPSER_DASH_TRAFFIC` | `1` = include ASCII payload content in the traffic feed | off (metadata only) |
-
-If you expose the dashboard beyond localhost without a token, tcpser logs
-a warning. Enabling `TCPSER_DASH_TRAFFIC` while exposed logs a louder one —
-only turn it on behind localhost + a token. With a token set, open
-`http://host:port/?token=SECRET` (the page forwards the token to the
-API/SSE/metrics calls automatically). Per-connection read/write timeouts and a
-bounded handler-thread pool protect against slow-client / exhaustion abuse.
-
-```bash
-export TCPSER_DASH_BIND=0.0.0.0
-export TCPSER_DASH_TOKEN=$(head -c16 /dev/urandom | xxd -p)
-tcpser -d /dev/ttyUSB0 -s 2400 -p 6400 -H 8080
-```
-
----
-
-## Webhooks (-e)
-
-`-e <url>` fires a JSON POST (Discord/Slack/ntfy/generic) on events:
-`CONNECTED`, `DISCONNECTED`, `GATE_FAIL`, and `IP_BLOCKED`. Repeat `-e`
-for multiple targets (up to 8). The webhook URL often embeds a secret
-token, so it is passed to `curl` via a stdin config — it does **not**
-appear in the process table (`ps`) and is masked in logs. Requires the
-`curl` binary on `PATH`.
-
-```bash
-tcpser -d /dev/ttyUSB0 -s 2400 -p 6400 -k secret \
-  -e "https://discord.com/api/webhooks/XXX/YYY" \
-  -e "https://ntfy.sh/my-bbs"
-```
-
----
-
-## Banner Rotation
-
-If `-P` points to a directory instead of a file, tcpser picks a
-random banner file for each new connection:
-
-```bash
-tcpser -d /dev/ttyUSB0 -s 2400 -p 6400 -x -P data/banners/
-```
-
-Place multiple `.seq` files in the directory for variety.
-
----
-
-## RS232 Analyzer Mode
-
-The analyzer (`-Z`) is an interactive diagnostic tool that determines
-the correct tcpser settings for your specific C64 RS232 adapter.
-
-### Supported Adapters
-
-- **SwiftLink-232** (6551 ACIA, max 38400 baud)
-- **CMD Turbo232** (6551 + extension register, max 230400 baud)
-- **GGLABS GLINK232** (SwiftLink compatible, 3 BOM configurations)
-- **Userport adapters** (software UART, 300-2400 baud)
-- **UP9600 mod** (CIA shift register trick, 9600 baud)
-
-### How It Works
-
-The analyzer is interactive and takes a few minutes. What it actually does:
-
-| Step | You do this | It does |
-|------|-------------|---------|
-| 1 | Start (or restart) the BBS so it sends its AT init | Listens at each baud rate and picks the one that yields valid AT commands |
-| 2 | (automatic) | Toggles DTR/RTS and watches which inputs move: detects null-modem cross-wiring and 3-wire adapters |
-| 3 | (automatic) | Sends `OK` and confirms the BBS accepts it |
-| Report | | Infers the cartridge type from the detected speed and control-line behaviour, and prints a recommended command line |
-
-Limitations: flow control (`&K3`/`&K4`) and parity are **not** probed; the
-flow-control suggestion in the report is a heuristic to verify. A BBS usually
-sends its init once, so if nothing is detected restart the BBS and run again.
-
-### DCD Gating (6551 ACIA)
-
-All cartridges using the 6551 ACIA chip have a hardware behavior where
-**the receiver is disabled when DCD is not asserted**. tcpser defaults
-to DCD following carrier state. The analyzer confirms this behavior in
-Phase 4b.
-
----
-
-## Security Features
-
-### Bot Protection Gate
-
-Pre-authentication filter that runs before any serial/modem traffic.
-
-| Flag | Mode |
-|------|------|
-| `-x` | Require BACKSPACE pressed twice (accepts 0x08, 0x14, 0x7F) |
-| `-k <password>` | Require password (PETSCII/ASCII normalized) |
-| `-W <seconds>` | Gate timeout (default: 20, max: 300) |
-| `-F <count>` | Failures before permanent IP block (default: 3) |
-
-### Rate Limiting
-
-5-second minimum between connection attempts from the same IP.
-Prevents rapid reconnection abuse.
-
-### External Hook
-
-```bash
--E gate_success_log        # a script NAME inside /usr/local/tcpser/scripts/, not a path
-```
-
-Runs detached after a successful gate (the caller is not delayed; killed
-after 30 s). No arguments are passed; the environment variable
-`TCPSER_PEER_IP` contains the caller's IP address. See `samples/scripts/README.md`.
-
----
-
-## AT Command Reference
-
-### Supported Commands
-
-| Command | Effect |
-|---------|--------|
-| `ATA` | Answer incoming call |
-| `ATD<number>` | Dial (TCP connect) |
-| `ATDL` | Redial last number |
-| `ATH0` | Hang up |
-| `ATH1` | Go off-hook |
-| `ATO` | Return to online data mode |
-| `ATE0` / `ATE1` | Echo off / on |
-| `ATQ0` / `ATQ1` | Responses on / off |
-| `ATV0` / `ATV1` | Numeric / verbose result codes |
-| `ATX0`-`ATX4` | Result code level |
-| `ATW0`-`ATW2` | Connect message format |
-| `ATZ` | Reset modem |
-| `AT&C0` / `AT&C1` | DCD always on / follows carrier |
-| `AT&D0`-`AT&D2` | DTR: ignore / command mode / hang up |
-| `AT&F` | Load factory defaults |
-| `AT&K0` / `AT&K3` / `AT&K4` | Flow: none / RTS-CTS / XON-XOFF |
-| `ATS<n>=<v>` | Set S-register |
-| `ATS<n>?` | Query S-register |
-| `A/` | Repeat last command |
-| `+++` | Escape to command mode (with guard time) |
-
-### Key S-Registers
-
-| Register | Purpose | Default |
-|----------|---------|---------|
-| S0 | Rings to auto-answer (0=never) | 0 |
-| S2 | Escape character | 43 (+) |
-| S3 | Line termination (CR) | 13 |
-| S4 | Response formatting (LF) | 10 |
-| S5 | Backspace character | 8 |
-| S7 | Carrier wait timeout (sec) | 50 |
-| S12 | Escape guard time (1/50 sec) | 50 (1.0s) |
-| S30 | Inactivity timeout (10s units) | 0 (off) |
-
-### Phone Book
-
-```bash
-tcpser -n 5551212=bbs.example.com:6400
-```
-
----
-
-## Signal Handling
+**Signals**
 
 | Signal | Action |
 |--------|--------|
-| `SIGHUP` | Reopen log file (for logrotate) |
-| `SIGUSR1` | Dump statistics to stderr |
-| `SIGTERM` / `SIGINT` | Graceful shutdown (save stats) |
-| `SIGPIPE` / `SIGIO` | Ignored (prevents crashes) |
-| `SIGCHLD` | Auto-reap child processes |
+| `SIGHUP` | reopen the log file |
+| `SIGUSR1` | dump statistics to stderr |
+| `SIGTERM` / `SIGINT` | graceful shutdown: NO CARRIER to callers, stats saved |
 
----
+**Telnet:** when a caller speaks telnet (IAC), tcpser negotiates echo, binary mode and
+terminal type/speed; PETSCII passes through untouched.
 
-## Cable Wiring
-
-tcpser uses the PC serial port's DTR line to signal DCD to the C64.
-
-### Simplified Bi-directional (recommended)
-
-```
-    PC          C64
-    CTS---------RTS
-    RTS---------CTS
-    TXD---------RXD
-    RXD---------TXD
-    DTR---------DCD
-    DCD---------DTR
-    GND---------GND
-```
-
-### Minimal 3-Wire
-
-If your adapter only has TX/RX/GND, use `-i "&D0"` to ignore DTR
-(tcpser cannot detect C64 hang-up without control lines).
-
----
-
-## Auto-Start Service
-
-### Linux (systemd)
+**ip232 mode** (`-v port`): for VICE / WinVICE virtual RS232. The listener is the
+trusted modem side; it binds loopback by default.
 
 ```bash
-# Edit paths in the service file first
-sudo cp data/tcpser.service /etc/systemd/system/
-sudo systemctl enable tcpser
-sudo systemctl start tcpser
+tcpser -v 25232 -s 38400 -p 6400 -x
 ```
 
-### macOS (launchd)
-
-```bash
-# Edit paths in the plist first
-sudo cp data/com.tcpser.bbs.plist /Library/LaunchDaemons/
-sudo launchctl load /Library/LaunchDaemons/com.tcpser.bbs.plist
-```
-
-Both service files have `KeepAlive`/`Restart=always` so tcpser
-automatically restarts on crash.
-
----
-
-## Telnet Support
-
-When tcpser detects a telnet client (IAC byte 0xFF), it automatically
-negotiates telnet protocol including echo suppression, binary
-transmission, and terminal type/speed negotiation.
-
----
-
-## ip232 Mode
-
-For use with WinVICE or other emulators with virtual RS232:
-
-```bash
-tcpser -v 25232 -s 38400 -l 4 -p 6400
-```
-
----
-
-## Project Structure
-
-```
-tcpser-scene-edition/
-  src/               Source code (25 C modules)
-    bridge.c         Connection handling, gate, blocklist, watchdog
-    modem_core.c     AT command emulation, Hayes modem
-    dashboard.c      Live full-screen terminal dashboard
-    webserver.c      HTTP web dashboard + /metrics (auth, timeouts)
-    webhook.c        Event webhooks (Discord/Slack/ntfy)
-    analyzer.c       RS232 adapter diagnostic tool
-    connlog.c        CSV connection logging
-    secure_http.c    Hardened HTTP request parsing
-    secure_paths.c   Path-traversal-safe file validation
-    secure_script.c  Sandboxed gate-success script execution
-    phone_book.c     Dial-target phone book
-    util.c           Shared helpers (safe copy, constant-time compare, time)
-    tcpser.c         Main loop, signal handling, graceful drain
-    ip.c             TCP/IP networking, keepalive
-    serial.c         Serial port I/O
-    dce.c            DCE (modem) abstraction
-    line.c           Line (TCP) abstraction
-    nvt.c            Telnet NVT negotiation
-    ...
-  data/              PETSCII screens, blocklist, service files
-  docs/              Documentation (see docs/README.md)
-  samples/           systemd / fail2ban / firewall / nginx examples
-  man/               Man page
-  Makefile           Build system (Linux/macOS, hardened flags)
-```
-
----
-
-## Stability Features
-
-- **SIGPIPE/SIGIO** ignored (prevents crashes on broken connections)
-- **SIGTERM/SIGINT** graceful shutdown with stats persistence
-- **TCP keepalive** enabled (60s idle, 30s interval, 3 probes)
-- **Robust I/O** with EINTR retry and short-write handling
-- **Atomic blocklist** updates with file locking
-- **Answer timeout** prevents scanners from holding modem lines
-- **DTR grace period** prevents BBS init race on reconnect
-- **USB serial reconnect** survives adapter disconnects
-- **Thread-safe dashboard** commands via pipe protocol
+</details>
 
 ---
 
 ## Troubleshooting
 
-### No data from BBS at any baud rate
-1. TX/RX are likely swapped. Try a null-modem adapter.
-2. Check that the RS232 cartridge is firmly seated.
-3. Try a different USB-serial adapter (FTDI most reliable).
-4. Run the analyzer (`-Z`) to systematically diagnose.
+<details>
+<summary><b>No data from the BBS at any baud rate</b></summary>
 
-### BBS receives RING but doesn't answer
-1. Set auto-answer in init string: `-i "s0=1"`
-2. Check that DCD is asserted.
+TX/RX are probably swapped: try a null-modem adapter. Check the cartridge is seated
+and try another USB-serial adapter (FTDI is the most reliable). Run `-Z`.
+</details>
 
-### Callers connect but see garbage
-1. Baud rate mismatch between tcpser (`-s`) and BBS software.
-2. Run the analyzer to detect the correct baud rate.
+<details>
+<summary><b>The BBS gets RING but never answers</b></summary>
 
-### BBS hangs after ungraceful disconnect
-1. The watchdog (`-w 120`, default) will toggle DTR after 2 minutes.
-2. After 3 consecutive no-answers, DTR is toggled automatically.
-3. Press `H` in the dashboard for immediate hangup.
+Enable auto-answer in the init string (`-i "S0=1"`) or let the BBS answer with `ATA`.
+Check DCD: 6551 cartridges ignore input while DCD is low (`-i "&C0"` or `-I`).
+</details>
 
-### Dashboard shows "Caller Online" after no-answer
-Fixed in 1.2.0 — the connected state is now cleared on all
-no-answer paths.
+<details>
+<summary><b>Callers connect but see garbage</b></summary>
+
+Baud mismatch between `-s` and the BBS. Run the analyzer to detect the right rate.
+</details>
+
+<details>
+<summary><b>The BBS hangs after an ungraceful disconnect</b></summary>
+
+The watchdog (`-w 120`) pulses DTR after the timeout; press `H` in the dashboard for an
+immediate hang-up. Three consecutive no-answers also trigger a pulse.
+</details>
+
+<details>
+<summary><b>"tcpser: -s 12345 is not a supported serial speed" (or any exit code 2)</b></summary>
+
+An option failed validation. The message says which one; `tcpser -h` lists valid values.
+</details>
 
 ---
 
-## License
+## Documentation
 
-TCPSER is distributed under the GPL 2.0 or later.
+| | |
+|---|---|
+| [`docs/README.md`](docs/README.md) | documentation index |
+| [`docs/SECURITY_GUIDE.md`](docs/SECURITY_GUIDE.md) | threat model, gate, blocklist, dashboard exposure, deployment hardening |
+| [`docs/AUDIT-2026-11-01.md`](docs/AUDIT-2026-11-01.md) | full security / stability / UX audit and the redesign roadmap |
+| [`samples/`](samples/README.md) | systemd, launchd, nginx + TLS, fail2ban, firewall, installer, gate hooks |
+| [`c64/`](c64/README.md) | the C64-side link analyzer |
+| [`CHANGES`](CHANGES) · [`SECURITY_CHANGELOG.md`](SECURITY_CHANGELOG.md) | release notes |
+| `man tcpser` | manual page |
 
-## Credits
+### Project structure
 
-- **Jim Brain** (brain@jbrain.com) - Original tcpser
-- **Anthony Tolle** (atolle@gcns.com) - ip232 support
-- **David Jacoby** (david@unbreached.se) - Security hardening, dashboard, analyzer, BBS recovery, C64 optimizations
+```
+src/          C sources (bridge.c = connections/gate/blocklist/watchdog, modem_core.c = Hayes
+              emulation, dashboard.c / webserver.c = dashboards, analyzer.c, secure_*.c …)
+data/         PETSCII screens, blocklist template, systemd unit, launchd plist
+docs/         guides, audit, images
+samples/      deployment examples
+c64/          6502 source and .prg/.d64 of the C64 link analyzer
+man/          tcpser.1
+```
+
+### License
+
+GPL-2.0 or later. See [`LICENSE`](LICENSE).
+
+### Credits
+
+- **Jim Brain** (brain@jbrain.com): original tcpser
+- **Anthony Tolle** (atolle@gcns.com): ip232 support
+- **David Jacoby** (david@unbreached.se): security hardening, dashboards, analyzer, BBS recovery, C64 optimizations
