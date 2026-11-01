@@ -197,10 +197,88 @@ void mdm_write_char(modem_config *cfg, unsigned char data) {
   mdm_write(cfg, str, 1);
 }
 
-void mdm_write(modem_config *cfg, unsigned char data[], int len) {
+/* Returns bytes written, or -1. A short count means the serial port did not
+ * drain within the write timeout (see serial.c write_all) and the tail was
+ * dropped; callers that care should log/count it. */
+int mdm_write(modem_config *cfg, unsigned char data[], int len) {
   if(cfg->allow_transmit == TRUE) {
-    dce_write(&cfg->dce_data, data, len);
+    return dce_write(&cfg->dce_data, data, len);
   }
+  return len;
+}
+
+/* Snapshot the current settings as the operator profile (call once the -i init
+ * string and command-line flags have been applied). */
+void mdm_save_profile(modem_config *cfg) {
+  mdm_profile *p = &cfg->profile;
+  p->send_responses = cfg->send_responses;
+  p->connect_response = cfg->connect_response;
+  p->response_code_level = cfg->response_code_level;
+  p->text_responses = cfg->text_responses;
+  p->is_echo = cfg->is_echo;
+  p->dtr_mode = cfg->dtr_mode;
+  p->force_dsr = cfg->force_dsr;
+  p->force_dcd = cfg->force_dcd;
+  p->invert_dsr = cfg->invert_dsr;
+  p->invert_dcd = cfg->invert_dcd;
+  p->flow_control = cfg->dce_data.flow_control;
+  memcpy(p->s, cfg->s, sizeof(p->s));
+  p->valid = TRUE;
+  LOG(LOG_DEBUG, "Operator profile saved (invert_dcd=%d force_dcd=%d force_dsr=%d flow=%d dtr_mode=%d)",
+      p->invert_dcd, p->force_dcd, p->force_dsr, p->flow_control, p->dtr_mode);
+}
+
+static void mdm_factory_s_regs(int *s) {
+  for(int r = 0; r < 100; r++) s[r] = 0;
+  s[S_REG_BREAK] = 43;
+  s[S_REG_CR] = 13;
+  s[S_REG_LF] = 10;
+  s[S_REG_BS] = 8;
+  s[S_REG_BLIND_WAIT] = 2;
+  s[S_REG_CARRIER_WAIT] = 50;
+  s[S_REG_COMMA_PAUSE] = 2;
+  s[S_REG_CARRIER_TIME] = 6;
+  s[S_REG_CARRIER_LOSS] = 14;
+  s[S_REG_DTMF_TIME] = 95;
+  s[S_REG_GUARD_TIME] = 50;
+}
+
+/* ATZ / AT&F / dashboard reset: restore the operator profile if one was saved,
+ * else compiled-in factory defaults. Single implementation — this used to be
+ * four divergent copies (mdm_init_config, ATZ, &F, dashboard MSG_RESET). */
+void mdm_reset_profile(modem_config *cfg) {
+  mdm_profile *p = &cfg->profile;
+  if(p->valid) {
+    cfg->send_responses = p->send_responses;
+    cfg->connect_response = p->connect_response;
+    cfg->response_code_level = p->response_code_level;
+    cfg->text_responses = p->text_responses;
+    cfg->is_echo = p->is_echo;
+    cfg->dtr_mode = p->dtr_mode;
+    cfg->force_dsr = p->force_dsr;
+    cfg->force_dcd = p->force_dcd;
+    cfg->invert_dsr = p->invert_dsr;
+    cfg->invert_dcd = p->invert_dcd;
+    memcpy(cfg->s, p->s, sizeof(cfg->s));
+    dce_set_flow_control(&cfg->dce_data, p->flow_control);
+  } else {
+    cfg->send_responses = TRUE;
+    cfg->connect_response = 0;
+    cfg->response_code_level = 4;
+    cfg->text_responses = TRUE;
+    cfg->is_echo = TRUE;
+    cfg->dtr_mode = 2;
+    cfg->force_dcd = FALSE;
+    cfg->force_dsr = TRUE;
+    cfg->invert_dsr = FALSE;
+    cfg->invert_dcd = FALSE;
+    mdm_factory_s_regs(cfg->s);
+    dce_set_flow_control(&cfg->dce_data, 0);
+  }
+  cfg->crlf[0] = cfg->s[S_REG_CR];
+  cfg->crlf[1] = cfg->s[S_REG_LF];
+  cfg->crlf[2] = 0;
+  mdm_set_control_lines(cfg);
 }
 
 void mdm_send_response(int msg, modem_config *cfg) {
@@ -640,75 +718,24 @@ int mdm_parse_cmd(modem_config* cfg) {
         if(num > 1) {
           cmd = AT_CMD_ERR;
         } else {
-          /* ATZ: Reset modem to defaults, disconnect if online */
+          /* ATZ: restore the operator profile (-i / -I settings), disconnect
+           * if online. Used to reset compiled-in defaults — wiping inverted
+           * DCD, &C0 and &K3 — and never answered OK. */
           if(cfg->conn_type != MDM_CONN_NONE) {
             mdm_disconnect(cfg, FALSE);
           }
-          /* Reset runtime state (preserves hardware config) */
-          cfg->send_responses = TRUE;
-          cfg->connect_response = 0;
-          cfg->response_code_level = 4;
-          cfg->text_responses = TRUE;
-          cfg->is_echo = TRUE;
-          cfg->dtr_mode = 2;
-          cfg->force_dcd = FALSE;
-          cfg->force_dsr = TRUE;
-          cfg->invert_dsr = FALSE;
-          cfg->invert_dcd = FALSE;
-          dce_set_flow_control(&cfg->dce_data, 0);
-          for(int r = 0; r < (int)(sizeof(cfg->s) / sizeof(cfg->s[0])); r++)
-            cfg->s[r] = 0;
-          cfg->s[S_REG_BREAK] = 43;
-          cfg->s[S_REG_CR] = 13;
-          cfg->s[S_REG_LF] = 10;
-          cfg->s[S_REG_BS] = 8;
-          cfg->s[S_REG_BLIND_WAIT] = 2;
-          cfg->s[S_REG_CARRIER_WAIT] = 50;
-          cfg->s[S_REG_COMMA_PAUSE] = 2;
-          cfg->s[S_REG_CARRIER_TIME] = 6;
-          cfg->s[S_REG_CARRIER_LOSS] = 14;
-          cfg->s[S_REG_DTMF_TIME] = 95;
-          cfg->s[S_REG_GUARD_TIME] = 50;
-          cfg->crlf[0] = cfg->s[S_REG_CR];
-          cfg->crlf[1] = cfg->s[S_REG_LF];
-          cfg->crlf[2] = 0;
-          mdm_set_control_lines(cfg);
+          mdm_reset_profile(cfg);
+          if(cfg->is_cmd_mode == TRUE)
+            mdm_send_response(MDM_RESP_OK, cfg);
           done = TRUE; /* ATZ ignores remainder of command line */
         }
         break;
       case AT_CMD_FLAG_EXT + 'F':
-        /* &F: Load factory defaults (preserve hardware/connection state) */
+        /* &F: load "factory" defaults = the operator profile (see ATZ) */
         if(num > 1) {
           cmd = AT_CMD_ERR;
         } else {
-          cfg->send_responses = TRUE;
-          cfg->connect_response = 0;
-          cfg->response_code_level = 4;
-          cfg->text_responses = TRUE;
-          cfg->is_echo = TRUE;
-          cfg->dtr_mode = 2;
-          cfg->force_dcd = FALSE;
-          cfg->force_dsr = TRUE;
-          cfg->invert_dsr = FALSE;
-          cfg->invert_dcd = FALSE;
-          dce_set_flow_control(&cfg->dce_data, 0);
-          for(int r = 0; r < (int)(sizeof(cfg->s) / sizeof(cfg->s[0])); r++)
-            cfg->s[r] = 0;
-          cfg->s[S_REG_BREAK] = 43;
-          cfg->s[S_REG_CR] = 13;
-          cfg->s[S_REG_LF] = 10;
-          cfg->s[S_REG_BS] = 8;
-          cfg->s[S_REG_BLIND_WAIT] = 2;
-          cfg->s[S_REG_CARRIER_WAIT] = 50;
-          cfg->s[S_REG_COMMA_PAUSE] = 2;
-          cfg->s[S_REG_CARRIER_TIME] = 6;
-          cfg->s[S_REG_CARRIER_LOSS] = 14;
-          cfg->s[S_REG_DTMF_TIME] = 95;
-          cfg->s[S_REG_GUARD_TIME] = 50;
-          cfg->crlf[0] = cfg->s[S_REG_CR];
-          cfg->crlf[1] = cfg->s[S_REG_LF];
-          cfg->crlf[2] = 0;
-          mdm_set_control_lines(cfg);
+          mdm_reset_profile(cfg);
         }
         break;
       case AT_CMD_FLAG_EXT + 'C':

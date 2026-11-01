@@ -13,6 +13,7 @@
 #define MSG_NOTIFY        'N'
 #define MSG_HANGUP        'h'  /* dashboard: force hangup */
 #define MSG_RESET         'R'  /* dashboard: factory reset modem */
+#define MSG_SER_LOST      'X'  /* ctrl_thread: serial status unavailable (USB adapter gone?) */
 
 int accept_connection(modem_config *);
 int parse_ip_data(modem_config *cfg, unsigned char *data, int len);

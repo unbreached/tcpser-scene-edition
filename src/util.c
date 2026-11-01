@@ -4,6 +4,8 @@
 #include <unistd.h>
 #include <string.h>
 #include <time.h>
+#include <errno.h>
+#include <poll.h>
 
 #include "debug.h"
 #include "util.h"
@@ -20,23 +22,40 @@ int readPipe(int fd, unsigned char *buf, int len) {
   return read(fd, buf, len);
 }
 
+/* Send a whole file (banner / event screen) to fd. Handles EINTR, short writes
+ * and a full non-blocking queue (waits up to ~5 s). The old loop stored
+ * write()'s -1 in a size_t and kept going, and dropped the tail on a short
+ * write. Returns 0 on success, -1 on open/write failure. */
 int writeFile(char *name, int fd) {
   FILE *file;
   unsigned char buf[255];
-  size_t res;
-  size_t size = 1;
-  size_t max = sizeof(buf);
+  size_t n;
+  int rc = 0;
 
-  if(NULL != (file = fopen(name, "rb"))) {
-    do {
-      res = fread(buf, size, max, file);
-      if(res > 0)
-        res = write(fd, buf, res);
-    } while (res > 0);
-    fclose(file);
-    return 0;
+  if(NULL == (file = fopen(name, "rb"))) {
+    LOG(LOG_WARN, "Could not open file %s to send: %s", name, strerror(errno));
+    return -1;
   }
-  return -1;
+  while(rc == 0 && (n = fread(buf, 1, sizeof(buf), file)) > 0) {
+    size_t off = 0;
+    int waited_ms = 0;
+    while(off < n) {
+      ssize_t w = write(fd, buf + off, n - off);
+      if(w > 0) { off += (size_t)w; waited_ms = 0; continue; }
+      if(w < 0 && errno == EINTR) continue;
+      if(w < 0 && (errno == EAGAIN || errno == EWOULDBLOCK) && waited_ms < 5000) {
+        struct pollfd p; p.fd = fd; p.events = POLLOUT; p.revents = 0;
+        if(poll(&p, 1, 250) < 0 && errno != EINTR) { rc = -1; break; }
+        waited_ms += 250;
+        continue;
+      }
+      LOG(LOG_WARN, "Write of file %s interrupted: %s", name, w < 0 ? strerror(errno) : "stalled");
+      rc = -1;
+      break;
+    }
+  }
+  fclose(file);
+  return rc;
 }
 
 void spawn_thread(void * thread, void *arg, char *name) {

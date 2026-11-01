@@ -52,6 +52,7 @@
 #define LOG_EXIT() LOG(LOG_ENTER_EXIT,"Exitting %s function",__func__);
 int log_init(void);
 void log_set_file(FILE *a);
+int  log_get_fd(void);
 const char *log_get_filename(void);
 void log_reopen(void);
 void log_set_level(int a);

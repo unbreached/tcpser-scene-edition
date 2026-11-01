@@ -11,3 +11,4 @@ core
 # IDE
 .vscode/
 .idea/
+src/*.d

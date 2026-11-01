@@ -73,6 +73,7 @@ int dce_set_flow_control(dce_config *cfg, int opts) {
   } else {
     rc = ser_set_flow_control(cfg->fd, status);
   }
+  cfg->flow_control = opts;
 
   LOG_EXIT();
   return rc;

@@ -2,6 +2,7 @@
 #include <time.h>
 #include <pthread.h>
 #include <stdio.h>
+#include <unistd.h>
 #define DEBUG_VARS 1      // need this so we don't get extern defs
 #include "debug.h"
 #include "dashboard.h"
@@ -52,6 +53,12 @@ int log_init() {
 
 void log_set_file(FILE *a) {
   log_file = a;
+}
+
+/* Raw descriptor of the log stream, for code that must not touch stdio or the
+ * log mutex (a forked child before exec). */
+int log_get_fd(void) {
+  return log_file ? fileno(log_file) : STDERR_FILENO;
 }
 
 void log_set_file_by_name(const char *name, FILE *f) {
