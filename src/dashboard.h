@@ -84,6 +84,7 @@ void dashboard_connection_closed(void);
 void dashboard_render(void);
 int  dashboard_check_winch(void);
 void dashboard_check_keyboard(void);
+int  dashboard_quit_requested(void);   /* 'q' pressed: main loop exits via the graceful path */
 void dashboard_save_stats(const char *path);
 void dashboard_load_stats(const char *path);
 void dashboard_set_stats_path(const char *path);

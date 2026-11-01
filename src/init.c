@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <stdarg.h>
 #include <stdlib.h>       // for exit,atoi
 #include <string.h>
 #include <unistd.h>
@@ -12,9 +13,57 @@
 #include "webserver.h"
 #include "util.h"
 #include "serial.h"
+#include "secure_script.h"
+#include <sys/stat.h>
+#include <errno.h>
+#include <ctype.h>
+
+/* Exit codes: 0 ok, 1 runtime, 2 usage/config error. */
+#define EXIT_USAGE 2
+
+static void usage_error(const char *name, const char *fmt, ...) __attribute__((format(printf, 2, 3), noreturn));
+static void usage_error(const char *name, const char *fmt, ...) {
+  va_list ap;
+  fputs("\n  tcpser: ", stderr);
+  va_start(ap, fmt);
+  vfprintf(stderr, fmt, ap);
+  va_end(ap);
+  fprintf(stderr, "\n  Run '%s -h' for the full option list.\n\n", name);
+  exit(EXIT_USAGE);
+}
+
+/* Strict integer option: rejects "abc", "12abc", empty. */
+static int opt_int(const char *name, char flag, const char *s) {
+  char *end = NULL;
+  errno = 0;
+  long v = strtol(s, &end, 10);
+  if(!s[0] || !end || *end != '\0' || errno != 0 || v < -2147483647L || v > 2147483647L)
+    usage_error(name, "-%c expects a number, got '%s'", flag, s);
+  return (int)v;
+}
+
+/* Clamp with a visible warning (previously a LOG_WARN nobody saw at startup). */
+static int opt_clamp(char flag, int v, int lo, int hi) {
+  if(v < lo) { fprintf(stderr, "  Warning: -%c %d is below the minimum, using %d\n", flag, v, lo); return lo; }
+  if(v > hi) { fprintf(stderr, "  Warning: -%c %d is above the maximum, using %d\n", flag, v, hi); return hi; }
+  return v;
+}
+
+/* A file option must exist and be readable now, not fail silently per caller. */
+static void opt_readable(const char *name, char flag, const char *path, int allow_dir) {
+  struct stat st;
+  if(stat(path, &st) != 0)
+    usage_error(name, "-%c %s: %s", flag, path, strerror(errno));
+  if(S_ISDIR(st.st_mode) && !allow_dir)
+    usage_error(name, "-%c %s is a directory; a file is required", flag, path);
+  if(!S_ISDIR(st.st_mode) && !S_ISREG(st.st_mode))
+    usage_error(name, "-%c %s is not a regular file", flag, path);
+  if(access(path, R_OK) != 0)
+    usage_error(name, "-%c %s is not readable: %s", flag, path, strerror(errno));
+}
 
 void print_help(char* name) {
-  fprintf(stderr,
+  fprintf(stdout,
 "\n"
 "  TCPSER %s - %s\n"
 "  Hayes Modem Emulator over TCP/IP\n"
@@ -156,29 +205,38 @@ int init(int argc,
             case 'I':
               trace_flags |= TRACE_IP_OUT;
               break;
+            default:
+              usage_error(argv[0], "-t: unknown trace flag '%c' (use m M s S i I)", optarg[j]);
           }
           log_set_trace_flags(trace_flags);
         }
         break;
       case 'a':
+        opt_readable(argv[0], opt, optarg, FALSE);
         safe_strncpy(cfg[i].local_answer, optarg, sizeof(cfg[i].local_answer));
         break;
       case 'A':
+        opt_readable(argv[0], opt, optarg, FALSE);
         safe_strncpy(cfg[i].remote_answer, optarg, sizeof(cfg[i].remote_answer));
         break;
       case 'c':
+        opt_readable(argv[0], opt, optarg, FALSE);
         safe_strncpy(cfg[i].local_connect, optarg, sizeof(cfg[i].local_connect));
         break;
       case 'C':
+        opt_readable(argv[0], opt, optarg, FALSE);
         safe_strncpy(cfg[i].remote_connect, optarg, sizeof(cfg[i].remote_connect));
         break;
       case 'B':
+        opt_readable(argv[0], opt, optarg, FALSE);
         safe_strncpy(all_busy, optarg, all_busy_len);
         break;
       case 'N':
+        opt_readable(argv[0], opt, optarg, FALSE);
         safe_strncpy(cfg[i].no_answer, optarg, sizeof(cfg[i].no_answer));
         break;
       case 'T':
+        opt_readable(argv[0], opt, optarg, FALSE);
         safe_strncpy(cfg[i].inactive, optarg, sizeof(cfg[i].inactive));
         break;
       case 'i':
@@ -186,12 +244,26 @@ int init(int argc,
         cfg[i].cur_line_idx = strlen(cfg[i].cur_line);
         break;
       case 'P':
+        opt_readable(argv[0], opt, optarg, TRUE);   /* file, or a directory for rotation */
         safe_strncpy(cfg[i].pre_connect_file, optarg, sizeof(cfg[i].pre_connect_file));
         break;
       case 'G':
+        opt_readable(argv[0], opt, optarg, FALSE);
         safe_strncpy(cfg[i].access_granted_file, optarg, sizeof(cfg[i].access_granted_file));
         break;
       case 'E':
+        /* Fail at startup, not at the first successful gate with an invisible
+         * LOG_ERROR. -E takes a NAME inside TCPSER_SCRIPT_DIR, not a path. */
+        if(strchr(optarg, '/'))
+          usage_error(argv[0], "-E takes a script NAME inside %s, not a path ('%s')", TCPSER_SCRIPT_DIR, optarg);
+        if(!validate_script_name(optarg))
+          usage_error(argv[0], "-E '%s': use letters, digits, '-', '_' and '.' only", optarg);
+        {
+          char spath[600];
+          snprintf(spath, sizeof(spath), "%s/%s", TCPSER_SCRIPT_DIR, optarg);
+          if(access(spath, X_OK) != 0)
+            usage_error(argv[0], "-E %s: %s is not an executable file (%s)", optarg, spath, strerror(errno));
+        }
         safe_strncpy(cfg[i].on_gate_success_script, optarg, sizeof(cfg[i].on_gate_success_script));
         break;
       case 'x':
@@ -211,42 +283,46 @@ int init(int argc,
             exit(1);
           }
         } else {
+          /* -k "" used to enable the password gate with a password nobody can
+           * type (the gate requires a non-empty entry): every caller locked out,
+           * silently. */
+          if(optarg[0] == 0)
+            usage_error(argv[0], "-k requires a non-empty password (or -k env:VAR)");
+          if(strlen(optarg) >= sizeof(cfg[i].gate_password))
+            usage_error(argv[0], "-k password is too long (max %zu characters)", sizeof(cfg[i].gate_password) - 1);
           safe_strncpy(cfg[i].gate_password, optarg, sizeof(cfg[i].gate_password));
         }
         break;
       case 'W':
-        cfg[i].gate_timeout = atoi(optarg);
-        if(cfg[i].gate_timeout <= 0) cfg[i].gate_timeout = 20;
-        if(cfg[i].gate_timeout > 300) {
-          LOG(LOG_WARN, "Gate timeout clamped to 300 seconds (was %d)", cfg[i].gate_timeout);
-          cfg[i].gate_timeout = 300;
-        }
+        cfg[i].gate_timeout = opt_clamp(opt, opt_int(argv[0], opt, optarg), 1, 300);
         break;
       case 'F':
-        cfg[i].gate_max_fails = atoi(optarg);
-        if(cfg[i].gate_max_fails < 1) cfg[i].gate_max_fails = 1;
-        if(cfg[i].gate_max_fails > 100) cfg[i].gate_max_fails = 100;
+        cfg[i].gate_max_fails = opt_clamp(opt, opt_int(argv[0], opt, optarg), 1, 100);
         break;
       case 'w':
-        cfg[i].watchdog_timeout = atoi(optarg);
-        if(cfg[i].watchdog_timeout < 0) cfg[i].watchdog_timeout = 0;
-        if(cfg[i].watchdog_timeout > 600) cfg[i].watchdog_timeout = 600;
+        cfg[i].watchdog_timeout = opt_clamp(opt, opt_int(argv[0], opt, optarg), 0, 600);
         break;
       case 'O':
         connlog_init(optarg);
         break;
       case 'm':
-        cfg[i].max_session_minutes = atoi(optarg);
-        if(cfg[i].max_session_minutes < 0) cfg[i].max_session_minutes = 0;
+        cfg[i].max_session_minutes = opt_clamp(opt, opt_int(argv[0], opt, optarg), 0, 7 * 24 * 60);
         break;
       case 'e':
+        if(strncmp(optarg, "http://", 7) != 0 && strncmp(optarg, "https://", 8) != 0)
+          usage_error(argv[0], "-e expects an http:// or https:// webhook URL");
         webhook_init(optarg);
         break;
       case 'Y':
         dashboard_set_stats_path(optarg);
         break;
       case 'H':
-        webserver_init(atoi(optarg));
+        {
+          int wport = opt_int(argv[0], opt, optarg);
+          if(wport < 1 || wport > 65535)
+            usage_error(argv[0], "-H %d: web dashboard port must be 1..65535", wport);
+          webserver_init(wport);
+        }
         break;
       case 'I':
         cfg[i].invert_dcd = TRUE;
@@ -327,11 +403,17 @@ int init(int argc,
         }
         break;
       case 'n':
-        tok = strtok(optarg, "=");
-        pb_add(tok, strtok(NULL, "="));
+        {
+          char *eq = strchr(optarg, '=');
+          if(!eq || eq == optarg || eq[1] == 0)
+            usage_error(argv[0], "-n expects NUMBER=host:port, got '%s'", optarg);
+          tok = strtok(optarg, "=");
+          if(pb_add(tok, strtok(NULL, "=")) != 0)
+            usage_error(argv[0], "-n could not add phone book entry '%s' (book full?)", optarg);
+        }
         break;
       case 'l':
-        log_set_level(atoi(optarg));
+        log_set_level(opt_clamp(opt, opt_int(argv[0], opt, optarg), 0, LOG_TRACE));
         break;
       case 'L':
         {
@@ -342,17 +424,25 @@ int init(int argc,
             extern void log_set_file_by_name(const char *, FILE *);
             log_set_file_by_name(optarg, lf);
           } else {
-            fprintf(stderr, "Warning: could not open log file %s\n", optarg);
+            usage_error(argv[0], "-L could not open log file %s: %s", optarg, strerror(errno));
           }
         }
         break;
       case 's':
-        cfg[i].dce_data.port_speed = atoi(optarg);
+        {
+          int sp = opt_int(argv[0], opt, optarg);
+          if(sp <= 0 || ser_get_bps_const(sp) < 0)
+            usage_error(argv[0], "-s %d is not a supported serial speed (use e.g. 300, 1200, 2400, 9600, 19200, 38400, 57600, 115200)", sp);
+          cfg[i].dce_data.port_speed = sp;
+        }
         LOG(LOG_ALL, "Setting DTE speed to %d", cfg[i].dce_data.port_speed);
         if(dce_set == FALSE)
           cfg[i].line_speed = cfg[i].dce_data.port_speed;
         break;
       case '?':
+        /* getopt already printed "illegal option" / "option requires an argument" */
+        usage_error(argv[0], "invalid option. Usage: %s -d <device> | -v <port> [options]", argv[0]);
+        break;
       case 'h':
         print_help(argv[0]);
         break;
@@ -398,7 +488,9 @@ int init(int argc,
         tty_set = TRUE;
         break;
       case 'S':
-        cfg[i].line_speed = atoi(optarg);
+        cfg[i].line_speed = opt_int(argv[0], opt, optarg);
+        if(cfg[i].line_speed <= 0)
+          usage_error(argv[0], "-S expects a positive speed to report in CONNECT");
         dce_set = TRUE;
         break;
       case 'D':
@@ -437,7 +529,7 @@ int init(int argc,
       "  Give -d <device> for a real serial port (e.g. -d /dev/ttyUSB0)\n"
       "  or   -v <port>   for ip232 over TCP.\n"
       "  Run '%s -h' for the full option list.\n\n", argv[0]);
-    exit(1);
+    exit(EXIT_USAGE);
   }
 
   LOG(LOG_DEBUG, "Read configuration for %i serial port(s)", i);

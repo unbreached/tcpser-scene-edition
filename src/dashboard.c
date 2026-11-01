@@ -92,10 +92,22 @@ static void term_size(int *w, int *h) {
   }
 }
 
+static int g_quit_requested = 0;
+static char g_confirm = 0;     /* pending destructive hotkey awaiting y/N */
+void term_restore(void);
+
 static void term_raw_on(void) {
   if(g_term_raw) return;
+  /* -M needs a real terminal on both stdin (keys) and stderr (drawing).
+   * Under systemd / a pipe we would otherwise spew ANSI into a file and block
+   * the main loop on read(STDIN). Fall back to headless capture (-H still works). */
+  if(!isatty(STDIN_FILENO) || !isatty(STDERR_FILENO)) {
+    fprintf(stderr, "  -M: stdin/stderr is not a terminal; running the monitor headless (use -H for the web dashboard).\n");
+    return;
+  }
   struct termios t;
-  tcgetattr(STDIN_FILENO, &g_orig_term);
+  if(tcgetattr(STDIN_FILENO, &g_orig_term) != 0) return;
+  atexit(term_restore);   /* any exit path leaves the terminal usable */
   t = g_orig_term;
   t.c_lflag &= ~(ICANON | ECHO);
   t.c_cc[VMIN] = 0; t.c_cc[VTIME] = 0;
@@ -775,6 +787,15 @@ static void do_unblock(void) {
   fflush(f);
 }
 
+int dashboard_quit_requested(void) { return g_quit_requested; }
+
+static void ask_confirm(char key, const char *what) {
+  g_confirm = key;
+  /* Overwrite the line under the hotkey bar with the prompt. */
+  fprintf(stderr, "\r" E "2K" " " BOLD C_LYEL "%s? [y/N]" RST " ", what);
+  fflush(stderr);
+}
+
 void dashboard_check_keyboard(void) {
   /* Interactive keys only make sense when the terminal dashboard owns the tty
    * in raw mode. In headless (web-only) mode, never read stdin — a blocking
@@ -782,13 +803,30 @@ void dashboard_check_keyboard(void) {
   if(!g_dash.enabled || !g_term_raw) return;
   char ch;
   while(read(STDIN_FILENO, &ch, 1) == 1) {
+    if(g_confirm) {
+      /* Destructive keys (hang up a live caller, clear blocks, quit) sit on
+       * adjacent single keys and used to fire instantly; 'q' even exit(0)'d
+       * past the graceful shutdown (no NO CARRIER, stats not saved). */
+      char pending = g_confirm;
+      g_confirm = 0;
+      if(ch == 'y' || ch == 'Y') {
+        switch(pending) {
+          case 'h': do_hangup(); break;
+          case 'u': do_unblock(); continue;   /* leaves its own overlay text */
+          case 'q': g_quit_requested = 1; return;
+        }
+      }
+      g_dash_paused = 0;
+      dashboard_render();
+      continue;
+    }
     switch(ch) {
-      case 'h': case 'H': do_hangup(); break;
+      case 'h': case 'H': ask_confirm('h', "Hang up the current caller"); break;
       case 'r': case 'R': do_reset(); break;
       case 's': case 'S': g_dash_paused = 0; dashboard_render(); break;
       case 'b': case 'B': do_show_blocklist(); break;
-      case 'u': case 'U': do_unblock(); break;
-      case 'q': case 'Q': term_restore(); fprintf(stderr, CSHOW RST "\n"); exit(0); break;
+      case 'u': case 'U': ask_confirm('u', "Clear all timed blocks"); break;
+      case 'q': case 'Q': ask_confirm('q', "Quit tcpser (hangs up callers, saves stats)"); break;
     }
   }
 }

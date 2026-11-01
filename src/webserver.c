@@ -515,15 +515,15 @@ void webserver_init(int port) {
     g_web_traffic = 1;
 }
 
-void webserver_start(void) {
+int webserver_start(void) {
   struct sockaddr_in server_addr;
 
-  if(g_web_port <= 0) return;
+  if(g_web_port <= 0) return -1;
 
   g_web_socket = socket(AF_INET, SOCK_STREAM, 0);
   if(g_web_socket < 0) {
     LOG(LOG_ERROR, "Failed to create web server socket");
-    return;
+    return -1;
   }
 
   int opt = 1;
@@ -539,17 +539,19 @@ void webserver_start(void) {
   }
 
   if(bind(g_web_socket, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
-    LOG(LOG_ERROR, "Failed to bind web server to %s:%d", g_web_bind, g_web_port);
+    LOG(LOG_ERROR, "Failed to bind web server to %s:%d: %s", g_web_bind, g_web_port, strerror(errno));
+    fprintf(stderr, "  ERROR: web dashboard could not bind %s:%d: %s\n", g_web_bind, g_web_port, strerror(errno));
     close(g_web_socket);
     g_web_socket = -1;
-    return;
+    return -1;
   }
 
   if(listen(g_web_socket, 5) < 0) {
     LOG(LOG_ERROR, "Failed to listen on web server port %d", g_web_port);
+    fprintf(stderr, "  ERROR: web dashboard could not listen on port %d: %s\n", g_web_port, strerror(errno));
     close(g_web_socket);
     g_web_socket = -1;
-    return;
+    return -1;
   }
 
   /* Warn loudly if exposed beyond localhost without authentication. */
@@ -572,8 +574,9 @@ void webserver_start(void) {
     close(g_web_socket);
     g_web_socket = -1;
     g_web_running = 0;
-    return;
+    return -1;
   }
+  return 0;
 }
 
 void webserver_stop(void) {

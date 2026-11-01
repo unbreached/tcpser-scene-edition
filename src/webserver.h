@@ -2,7 +2,7 @@
 #define WEBSERVER_H
 
 void webserver_init(int port);
-void webserver_start(void);
+int  webserver_start(void);   /* 0 = listening, -1 = failed (already logged) */
 void webserver_stop(void);
 int webserver_is_running(void);
 int webserver_get_port(void);

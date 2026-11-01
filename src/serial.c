@@ -115,7 +115,7 @@ int ser_get_bps_const(int speed) {
       bps_rate = B0;
       break;
     default:
-      ELOG(LOG_FATAL, "Unknown baud rate"); 
+      LOG(LOG_DEBUG, "Unsupported baud rate %d", speed);   /* callers report it */
       bps_rate = -1;
   }
   LOG_EXIT();

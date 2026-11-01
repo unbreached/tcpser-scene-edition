@@ -945,7 +945,8 @@ int accept_connection(modem_config *cfg) {
       webhook_notify("GATE_FAIL", cfg->line_data.peer_ip);
       ip_note_fail(cfg->line_data.peer_ip, cfg->gate_max_fails, 600);
       line_disconnect(&cfg->line_data);
-      LOG(LOG_INFO, "Pre-connect gate failed; disconnected before touching serial");
+      LOG(LOG_INFO, "Pre-connect gate failed for %s; disconnected before touching serial",
+          cfg->line_data.peer_ip);
       LOG_EXIT();
       return 0;
     }
