@@ -990,7 +990,13 @@ int parse_ip_data(modem_config *cfg, unsigned char *data, int len) {
   // I'm going to cheat and assume it comes in chunks.
   int i = 0;
   unsigned char ch;
-  unsigned char text[1025];
+  /* Accumulates text until TEXT_CHUNK bytes, then flushes. Every append path
+   * flushes at exactly TEXT_CHUNK, so text_len never exceeds it; the explicit
+   * clamps below make that invariant visible to the compiler (GCC's
+   * -Warray-bounds could not prove it through the >= test) and keep the
+   * terminator in bounds even if a two-byte append is added later. */
+  enum { TEXT_CHUNK = 1024 };
+  unsigned char text[TEXT_CHUNK + 1];
   int text_len = 0;
 
   if(cfg->line_data.is_data_received == FALSE) {
@@ -1063,7 +1069,8 @@ int parse_ip_data(modem_config *cfg, unsigned char *data, int len) {
             break;
           case NVT_IAC:
             if (cfg->line_data.nvt_data.binary_recv) {
-              if (text_len >= 1024) {
+              if (text_len >= TEXT_CHUNK) {
+                text_len = TEXT_CHUNK;
                 text[text_len] = 0;
                 dce_write(&cfg->dce_data, text, text_len);
                 text_len = 0;
@@ -1078,14 +1085,16 @@ int parse_ip_data(modem_config *cfg, unsigned char *data, int len) {
       } else {
         text[text_len++] = data[i++];
       }
-      if(text_len == 1024) {
+      if(text_len >= TEXT_CHUNK) {
+        text_len = TEXT_CHUNK;
         text[text_len] = 0;
         // write to serial...
         mdm_write(cfg, text, text_len);
         text_len = 0;
       }
     }
-    if(text_len) {
+    if(text_len > 0) {
+      if(text_len > TEXT_CHUNK) text_len = TEXT_CHUNK;
       text[text_len] = 0;
       // write to serial...
       mdm_write(cfg, text, text_len);
