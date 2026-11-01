@@ -1490,7 +1490,10 @@ void *bridge_task(void *arg) {
         mdm_disconnect(cfg, FALSE);
       }
     }
-    if (FD_ISSET(cfg->dce_data.fd, &readfs)) {  // serial port
+    /* fd is -1 in ip232 mode until the emulator attaches; FD_ISSET(-1) is UB
+     * and aborts under glibc's _FORTIFY_SOURCE=2. Mirror the FD_SET guard. */
+    if (cfg->dce_data.is_connected && cfg->dce_data.fd >= 0
+        && FD_ISSET(cfg->dce_data.fd, &readfs)) {  // serial port
       LOG(LOG_DEBUG, "Data available on serial port");
       res = mdm_read(cfg, buf, sizeof(buf));
       if(res < 0 && !cfg->dce_data.is_ip232) {

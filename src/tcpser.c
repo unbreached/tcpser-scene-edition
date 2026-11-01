@@ -77,7 +77,7 @@ int main(int argc, char *argv[]) {
   port_config ports[MAX_PORTS];
   int port_count = 0;
 
-  char all_busy[255];
+  char all_busy[255] = {0};   /* read via strlen() later; was uninitialised when -B absent */
   int i;
   int rc = 0;
   int sSocket = 0;

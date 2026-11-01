@@ -84,7 +84,8 @@ void fmt_timestamp(char *buf, size_t size, const char *fmt) {
   if(!buf || size == 0) return;
   buf[0] = 0;
   time_t now = time(NULL);
-  struct tm *tm = localtime(&now);
+  struct tm tmbuf;
+  struct tm *tm = localtime_r(&now, &tmbuf);   /* thread-safe: called from several threads */
   if(tm) {
     strftime(buf, size, fmt, tm);
   } else {

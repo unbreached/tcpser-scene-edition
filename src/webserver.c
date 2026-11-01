@@ -242,7 +242,8 @@ static void get_status_json(char *buffer, size_t size) {
   for(int i = 0; i < g_dash.history_count && i < 10; i++) {
     int idx = (g_dash.history_head - 1 - i + 12) % 12;
     char time_str[32];
-    struct tm *tmv = localtime(&g_dash.history[idx].connect_time);
+    struct tm tmbuf;
+    struct tm *tmv = localtime_r(&g_dash.history[idx].connect_time, &tmbuf);
     if(tmv) strftime(time_str, sizeof(time_str), "%H:%M:%S", tmv);
     else    snprintf(time_str, sizeof(time_str), "??:??:??");
 

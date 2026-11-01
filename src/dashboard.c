@@ -400,7 +400,8 @@ static void render(void) {
       dash_history_entry_t *h = &g_dash.history[idx];
 
       char timebuf[16];
-      struct tm *tm = localtime(&h->connect_time);
+      struct tm tmbuf;
+      struct tm *tm = localtime_r(&h->connect_time, &tmbuf);
       if(tm) strftime(timebuf, sizeof(timebuf), "%H:%M:%S", tm);
       else snprintf(timebuf, sizeof(timebuf), "--:--:--");
 

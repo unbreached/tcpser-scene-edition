@@ -579,7 +579,12 @@ int mdm_parse_cmd(modem_config* cfg) {
           tmp[slen] = '\0';
         }
         if(num >= 0 && num < (int)(sizeof(cfg->s) / sizeof(cfg->s[0]))) {
-          cfg->s[num] = atoi(tmp); // TODO do not assume this is always a number...
+          /* S registers are 8-bit on a real Hayes modem. atoi() on an over-long
+           * digit string is UB (gave -1); parse with strtol and clamp 0..255. */
+          long sval = strtol(tmp, NULL, 10);
+          if(sval < 0) sval = 0;
+          if(sval > 255) sval = 255;
+          cfg->s[num] = (int)sval;
           switch(num) {
             case S_REG_CR:
               cfg->crlf[0] = cfg->s[S_REG_CR];

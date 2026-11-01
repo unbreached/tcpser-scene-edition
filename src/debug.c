@@ -43,7 +43,7 @@ int log_init() {
   log_desc[LOG_ENTER_EXIT] =      "ENTER_EXIT";
   log_desc[LOG_ALL] =             "DEBUG_X";
   log_desc[LOG_TRACE]=            "TRACE";
-  if( -1 == pthread_mutex_init(&log_mutex, NULL)) {
+  if( 0 != pthread_mutex_init(&log_mutex, NULL)) {
     perror("Could not create Log Mutex");
     exit(-1);
   }
@@ -67,9 +67,14 @@ void log_reopen(void) {
   if(log_filename[0]) {
     FILE *f = fopen(log_filename, "a");
     if(f) {
-      if(log_file && log_file != stdout && log_file != stderr)
-        fclose(log_file);
+      /* Swap under the log mutex: other threads may be mid-LOG() on the old
+       * FILE*, and fclose() of a stream in use is a use-after-free. */
+      pthread_mutex_lock(&log_mutex);
+      FILE *old = log_file;
       log_file = f;
+      pthread_mutex_unlock(&log_mutex);
+      if(old && old != stdout && old != stderr)
+        fclose(old);
     }
   }
 }
@@ -133,8 +138,9 @@ void log_trace(int type, unsigned char *line, int len) {
       }
       log_start(LOG_TRACE);
       fprintf(log_file, "%s|%s|%s|", get_trace_type(type), data, text);
+      log_end();   /* was outside the if: unlocked a mutex this thread did not hold
+                      whenever len was a multiple of 16 */
     }
-    log_end();
   }
 }
 
@@ -155,12 +161,13 @@ void log_start(int level) {
   char t[23];
   time_t now;
 
-  if(-1 == pthread_mutex_lock(&log_mutex)) {
+  if(0 != pthread_mutex_lock(&log_mutex)) {
     perror("Could not lock the log mutex");
   } else {
     // we have the lock.
     now = time(NULL);
-    struct tm *tmv = localtime(&now);
+    struct tm tmbuf;
+    struct tm *tmv = localtime_r(&now, &tmbuf);
     if(tmv) strftime(t, 22, "%Y-%m-%d %H:%M:%S", tmv);
     else snprintf(t, sizeof(t), "0000-00-00 00:00:00");
     fprintf(log_file, "%s:%5.5ld:%s:", t, (long)pthread_self(), log_desc[level]);
@@ -171,7 +178,7 @@ void log_start(int level) {
 void log_end() {
   fprintf(log_file, "\n");
   fflush(log_file);
-  if(-1 == pthread_mutex_unlock(&log_mutex)) {
+  if(0 != pthread_mutex_unlock(&log_mutex)) {
     perror("Could not lock the log mutex");
   }
 }
