@@ -1,8 +1,9 @@
 #!/bin/bash
 # TCPSER Firewall Rules (UFW - Ubuntu)
-# Run with: sudo bash ufw-rules.sh
+# Run with: sudo bash ufw-rules.sh            (adds rules to the current set)
+#           sudo bash ufw-rules.sh --reset    (wipes ALL existing ufw rules first)
 
-set -e
+set -eu
 
 # Configuration
 TCPSER_PORT=6400
@@ -11,8 +12,12 @@ SSH_PORT=22
 
 echo "Setting up UFW rules for TCPSER..."
 
-# Reset UFW
-ufw --force reset
+# Reset only on explicit request: 'ufw --force reset' used to run
+# unconditionally and destroyed every other service's rules on the host.
+if [[ "${1:-}" == "--reset" ]]; then
+    echo "Resetting all existing UFW rules (--reset given)..."
+    ufw --force reset
+fi
 
 # Default policies
 ufw default deny incoming
@@ -24,8 +29,10 @@ ufw allow $SSH_PORT/tcp comment 'SSH'
 # Allow TCPSER modem port
 ufw allow $TCPSER_PORT/tcp comment 'TCPSER Modem'
 
-# Allow web dashboard only from localhost (modify if needed)
-ufw allow from 127.0.0.1 to any port $WEB_PORT comment 'TCPSER Dashboard'
+# Web dashboard: tcpser binds it to 127.0.0.1 by default, so no rule is needed
+# and loopback is implicitly allowed by ufw. If you expose it with
+# TCPSER_DASH_BIND, restrict it to your LAN instead, e.g.:
+# ufw allow from 192.168.1.0/24 to any port $WEB_PORT proto tcp comment 'TCPSER Dashboard (LAN)'
 
 # Allow HTTP/HTTPS if using nginx proxy (uncomment if needed)
 # ufw allow 80/tcp comment 'HTTP'

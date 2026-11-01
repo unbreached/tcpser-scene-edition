@@ -386,30 +386,18 @@ the correct tcpser settings for your specific C64 RS232 adapter.
 
 ### How It Works
 
-**Phases 1-4 (interactive)** require you to change C64 state:
+The analyzer is interactive and takes a few minutes. What it actually does:
 
-| Phase | You do this | It tests |
-|-------|------------|----------|
-| 1 | Keep C64 OFF | Baseline signal levels |
-| 2 | Power ON (no BBS) | Which lines respond to power |
-| 3 | Start BBS software | Which lines change when BBS is ready |
-| 4 | (automatic) | DTR/RTS toggle to map null-modem wiring |
-| 4b | (automatic) | DCD gating (6551 ACIA receiver gate test) |
-| 4c | (automatic) | DSR disconnect behavior |
+| Step | You do this | It does |
+|------|-------------|---------|
+| 1 | Start (or restart) the BBS so it sends its AT init | Listens at each baud rate and picks the one that yields valid AT commands |
+| 2 | (automatic) | Toggles DTR/RTS and watches which inputs move: detects null-modem cross-wiring and 3-wire adapters |
+| 3 | (automatic) | Sends `OK` and confirms the BBS accepts it |
+| Report | | Infers the cartridge type from the detected speed and control-line behaviour, and prints a recommended command line |
 
-**Phase 5 (fully autonomous, ~4-7 minutes):**
-
-Sweeps 90 combinations of baud rate, flow control, and parity.
-For each one it configures the port, sends RING + CONNECT, listens
-for BBS response, sends NO CARRIER to reset, and moves on.
-
-**Phase 6** verifies the best settings with a full simulated call.
-
-**Phase 7** (interactive) you shut down the BBS to observe which
-control lines drop.
-
-**Phase 8** identifies your cartridge type and produces a recommended
-command line.
+Limitations: flow control (`&K3`/`&K4`) and parity are **not** probed; the
+flow-control suggestion in the report is a heuristic to verify. A BBS usually
+sends its init once, so if nothing is detected restart the BBS and run again.
 
 ### DCD Gating (6551 ACIA)
 
@@ -441,11 +429,12 @@ Prevents rapid reconnection abuse.
 ### External Hook
 
 ```bash
--E "/path/to/script.sh"
+-E gate_success_log        # a script NAME inside /usr/local/tcpser/scripts/, not a path
 ```
 
-Executes asynchronously after successful gate. Environment variable
-`TCPSER_PEER_IP` contains the caller's IP address.
+Runs detached after a successful gate (the caller is not delayed; killed
+after 30 s). No arguments are passed; the environment variable
+`TCPSER_PEER_IP` contains the caller's IP address. See `samples/scripts/README.md`.
 
 ---
 

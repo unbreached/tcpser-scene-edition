@@ -136,3 +136,53 @@
   SECURITY: clamp snprintf length before writing the POKE 838 baud string
             (latent, was safe); baud-menu memory safety re-verified. Full audit
             since 1.2.3 found no critical/high issues.
+1.4.1 (audit phase 1 — see docs/AUDIT-2026-11-01.md; no memory-safety/RCE bugs were found)
+  SECURITY: ip232 (-v) listener binds 127.0.0.1 by default (was 0.0.0.0, no auth:
+            confirmed open TCP proxy via ATDT and BBS impersonation); override
+            with TCPSER_IP232_BIND or an explicit addr:port, with a loud warning
+  SECURITY: dropped Access-Control-Allow-Origin: * from the web dashboard; any page
+            the operator visited could read /api/status cross-origin
+  SECURITY: AT number parser saturates instead of signed-overflowing (UBSan);
+            S-register values parsed with strtol and clamped 0..255
+  STABILITY: a USB-serial glitch no longer kills the process — ctrl_thread waits
+             and bridge_task reconnects (indefinitely, warning once a minute);
+             read()==0 on the tty is treated as port loss; ptys work (ENOTTY)
+  STABILITY: -E gate hook is truly asynchronous via a detached supervisor; the
+             old alarm()+SIG_DFL timeout terminated tcpser (exit 142) and every
+             run was logged as failed (SIGCHLD ignored); no stdio/malloc/locks
+             between fork and exec
+  STABILITY: ATZ / AT&F restore the operator profile (-i, -I) instead of factory
+             defaults, and ATZ answers OK — 1.2.1 regression wiped inverted DCD,
+             &C0 and &K3 on the first ATZ every BBS sends
+  STABILITY: serial writes wait for the TX queue (poll, up to 5 s) instead of
+             silently dropping bytes under backpressure (200 of 20000 delivered)
+  STABILITY: FD_ISSET on the serial fd guarded (fd=-1 before the ip232 client
+             attaches aborted under glibc _FORTIFY_SOURCE=2); log_trace mutex
+             mismatch at len%16==0; log_reopen (SIGHUP) swaps the FILE* under the
+             log mutex; localtime_r everywhere; all_busy[] initialised
+  CLI:      options are validated at startup with exit code 2 and a clear message
+            (-k "" locked every caller out silently; -s abc, -H 99999, missing -P
+            files, -E paths, -n badentry, -t Q, -l abc were all accepted); clamps
+            are printed; help goes to stdout; illegal option = usage + exit 2
+  CLI:      the Web: URL is only printed after the dashboard actually bound
+  TUI:      -M refuses a non-tty and runs headless; q/h/u ask y/N; q exits via
+            the graceful path (NO CARRIER, stats saved, terminal restored)
+  DEPLOY:   systemd units rewritten (the hardened sample used -w 8080 for the
+            dashboard, sent the IP blocklist to callers as the busy screen with
+            -B, and gave -E a directory); run unprivileged with StateDirectory/
+            LogsDirectory and TCPSER_BLOCKLIST in a writable dir; installer no
+            longer writes a tcpser.conf that nothing reads and is safe to re-run;
+            gate scripts read TCPSER_PEER_IP (argv was never passed; every run
+            failed); unusable gate_fail_security removed; nginx sample passes
+            nginx -t (limit_req_zone in http{}, no duplicate directives) and no
+            longer logs the dashboard token; iptables rate limits were dead code
+            (ACCEPT before the recent rules) + IPv6 added; ufw no longer resets
+            all rules unless --reset; stats_report.sh parsed the wrong CSV columns
+  DEPLOY:   fail2ban: new tcpser-gate jail/filter for the modem port; the gate
+            failed log line now includes the caller IP
+  BUILD:    automatic header dependency tracking (-MMD); legacy behaviour left
+            untouched objects with a stale struct layout after a header change
+  DOCS:     analyzer documented as implemented (no 90-combination sweep); man page
+            -p/-E/-d/-v/DCD corrections; -E example is a name, not a path;
+            stale 1.2.0 strings; samples/scripts/README.md hook interface
+

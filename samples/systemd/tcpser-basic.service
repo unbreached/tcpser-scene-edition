@@ -1,19 +1,27 @@
 [Unit]
 Description=TCPSER TCP-to-Serial Bridge (Basic Configuration)
-After=network.target
+Documentation=man:tcpser(1)
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/tcpser -d /dev/ttyUSB0 -s 2400 -p 6400
+ExecStart=/usr/local/bin/tcpser -d /dev/ttyUSB0 -s 2400 -p 6400 -x \
+  -L /var/log/tcpser/tcpser.log -l 4
+Environment=TCPSER_BLOCKLIST=/var/lib/tcpser/tcpser.blocklist
 User=tcpser
 Group=tcpser
+SupplementaryGroups=dialout
+LogsDirectory=tcpser
+StateDirectory=tcpser
 Restart=always
 RestartSec=5
 
 # Basic security
 NoNewPrivileges=yes
-ProtectSystem=yes
+ProtectSystem=strict
 ProtectHome=yes
+PrivateTmp=yes
 
 [Install]
 WantedBy=multi-user.target

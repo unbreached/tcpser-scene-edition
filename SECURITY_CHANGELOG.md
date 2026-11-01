@@ -1,4 +1,4 @@
-# TCPSER 1.2.0 Security Enhancement Changelog
+# TCPSER Security Changelog (1.2.0 and later)
 
 > See [`docs/SECURITY_GUIDE.md`](docs/SECURITY_GUIDE.md) for the authoritative
 > security reference and [`docs/README.md`](docs/README.md) for the doc index.

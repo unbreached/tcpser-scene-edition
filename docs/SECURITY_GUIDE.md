@@ -2,7 +2,7 @@
 
 ## Overview
 
-TCPSER 1.2.0 has undergone comprehensive security hardening to eliminate critical vulnerabilities while maintaining all functional capabilities. This guide provides complete security implementation details, deployment recommendations, and operational best practices.
+TCPSER (1.2 and later) has undergone comprehensive security hardening to eliminate critical vulnerabilities while maintaining all functional capabilities. This guide provides complete security implementation details, deployment recommendations, and operational best practices.
 
 ## Security Architecture
 
@@ -232,35 +232,23 @@ sudo ufw default allow outgoing
 
 # Allow BBS ports with rate limiting
 sudo ufw limit 6400/tcp comment "TCPSER BBS (rate limited)"
-sudo ufw limit 8080/tcp comment "TCPSER Web Dashboard (rate limited)"
-
-# Block common attack sources (optional)
-sudo ufw deny from 10.0.0.0/8
-sudo ufw deny from 172.16.0.0/12  
-sudo ufw deny from 192.168.0.0/16
+# The web dashboard binds 127.0.0.1 by default; no rule needed unless you expose it.
 
 # Enable firewall
 sudo ufw enable
 ```
 
 #### 2. Fail2ban Integration
-```ini
-# /etc/fail2ban/jail.local
-[tcpser-bruteforce]
-enabled = true
-filter = tcpser-bruteforce
-logpath = /var/log/tcpser-security.log
-maxretry = 3
-bantime = 3600
-findtime = 300
-action = iptables-multiport[name=tcpser, port="6400,8080"]
 
-# /etc/fail2ban/filter.d/tcpser-bruteforce.conf
-[Definition]
-failregex = .*BLOCKED.*<HOST>.*
-            .*GATE_FAIL.*<HOST>.*
-            .*Rate limited.*<HOST>.*
-ignoreregex =
+Use the shipped jails and filters in `samples/fail2ban/` (`tcpser-gate` reads
+tcpser's own log for gate failures, blocked and rate-limited IPs; `tcpser-auth`
+and `tcpser-flood` read the nginx access log for the dashboard). Start tcpser
+with `-L /var/log/tcpser/tcpser.log -l 4` so the gate lines are written.
+
+```bash
+sudo cp samples/fail2ban/tcpser.conf /etc/fail2ban/jail.d/
+sudo cp samples/fail2ban/tcpser-*.conf /etc/fail2ban/filter.d/
+sudo fail2ban-client reload
 ```
 
 #### 3. TLS Termination (Recommended)
@@ -552,7 +540,7 @@ The following files contain security implementations:
 
 ## Conclusion
 
-TCPSER 1.2.0 implements comprehensive security controls addressing all identified vulnerabilities. The multi-layered security approach provides defense in depth while maintaining full functionality for vintage BBS operations.
+TCPSER implements comprehensive security controls addressing all identified vulnerabilities. The multi-layered security approach provides defense in depth while maintaining full functionality for vintage BBS operations.
 
 **Key Security Achievements**:
 - ✅ **Zero Critical Vulnerabilities** after remediation

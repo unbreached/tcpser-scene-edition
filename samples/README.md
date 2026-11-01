@@ -102,11 +102,12 @@ Production-ready nginx configuration featuring:
 
 ### `fail2ban/tcpser.conf`
 Jail configuration for:
-- Authentication failure protection
-- Request flooding protection
+- `tcpser-gate`: callers failing the modem-port bot gate (reads tcpser's own
+  log; run tcpser with `-L /var/log/tcpser/tcpser.log -l 4`)
+- `tcpser-auth` / `tcpser-flood`: dashboard behind nginx (401s and flooding)
 
-### `fail2ban/tcpser-auth.conf` & `fail2ban/tcpser-flood.conf`
-Filter definitions for detecting attack patterns.
+### `fail2ban/tcpser-gate.conf`, `tcpser-auth.conf`, `tcpser-flood.conf`
+Filter definitions matching the tcpser log and the nginx access log.
 
 **Installation:**
 ```bash
@@ -117,29 +118,26 @@ sudo systemctl restart fail2ban
 
 ## Gate Scripts
 
-These scripts are executed when connections pass or fail the security gate. Place in `/usr/local/tcpser/scripts/` and use with the `-E` option.
+tcpser runs ONE optional hook after a caller passes the bot gate: `-E NAME`,
+where NAME is a script in `/usr/local/tcpser/scripts/` (no path). There is no
+gate-*failure* hook: failures are counted, rate-limited and blocked by tcpser
+itself (`-F`, blocklist). See `scripts/README.md` for the exact interface.
+
+- **No arguments** are passed. The caller IP is in the environment variable
+  `TCPSER_PEER_IP` (always a dotted quad).
+- The hook runs detached from the connection (the caller is not delayed) and
+  is killed after 30 s. Its exit status is logged as `tcpser[hook]: NAME: ...`.
+- The file must be a regular, executable, non-world-writable file owned so
+  the service user cannot modify it (`root:tcpser`, mode 750).
 
 ### `scripts/gate_success_log`
-Basic logging of successful gate passes:
-- Logs to `/var/log/tcpser/gate_success.log`
-- Sends to syslog
-- Input validation for IP addresses
+Appends `SUCCESS: Gate passed for IP ...` to `/var/log/tcpser/gate_success.log`
+and sends a syslog line.
 
 ### `scripts/gate_success_notify`
-Enhanced notifications for successful connections:
-- Slack webhook integration
-- Email notifications
-- Daily statistics tracking
-
-**Configuration:**
-Edit the script to set webhook URLs and email addresses.
-
-### `scripts/gate_fail_security`
-Security response to gate failures:
-- Detailed failure logging
-- Automatic temporary banning after repeated failures
-- Administrator alerts
-- Expired ban cleanup
+Slack / Discord webhook and optional e-mail. Configure through environment
+variables (`SLACK_WEBHOOK_URL`, `DISCORD_WEBHOOK_URL`, `TCPSER_NOTIFY_EMAIL`)
+in `/etc/tcpser/tcpser.env`; the IP is validated before it is placed in JSON.
 
 ## Monitoring Scripts
 
