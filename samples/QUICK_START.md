@@ -26,12 +26,14 @@ sudo systemctl status tcpser
 telnet localhost 6400
 
 # 5. View web dashboard
-curl http://localhost:8080
+curl http://127.0.0.1:8080/api/status
 ```
 
 ## Configuration Locations
 
-- **Service Config:** `/etc/tcpser/tcpser.conf`
+- **Service options:** the `ExecStart` line of the unit (`sudo systemctl edit --full tcpser`)
+- **Secrets (dashboard token, gate password):** `/etc/tcpser/tcpser.env`
+- **Persistent blocklist / stats:** `/var/lib/tcpser/`
 - **Scripts:** `/usr/local/tcpser/scripts/`
 - **Logs:** `/var/log/tcpser/`
 - **Data Files:** `/usr/local/share/tcpser/`

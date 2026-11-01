@@ -6,24 +6,50 @@
 #include <sys/ioctl.h>
 #include <errno.h>
 #include <string.h>
+#include <poll.h>
 #include "dce.h"
 #include "debug.h"
 
 #include "serial.h"
 
-// Best-effort write loop that handles EINTR and short writes.
-// For non-blocking fds, we return bytes written so far on EAGAIN/EWOULDBLOCK.
+/* How long a serial write may wait for the kernel TX queue to drain before we
+ * give up on the remainder. The port is O_NONBLOCK; at 2400 baud a full 4 KB
+ * queue takes ~17 s to drain, so with hardware flow control asserted by a busy
+ * C64 a few seconds of waiting is normal. Bounded so a dead C64 (CTS never
+ * raised) cannot wedge the bridge/ip threads forever. */
+#ifndef SER_WRITE_TIMEOUT_MS
+#define SER_WRITE_TIMEOUT_MS 5000
+#endif
+
+// Write loop that handles EINTR and short writes, and WAITS (poll POLLOUT)
+// when the non-blocking port's TX queue is full instead of silently dropping
+// the remainder — previously every caller ignored the short count, so a
+// caller pasting 10 KB at 2400 baud lost most of it.
 static int write_all(int fd, const unsigned char *data, int len) {
   int total = 0;
+  int waited_ms = 0;
   while (total < len) {
     ssize_t rc = write(fd, data + total, (size_t)(len - total));
     if (rc > 0) {
       total += (int)rc;
+      waited_ms = 0;
       continue;
     }
     if (rc == 0) break;
     if (errno == EINTR) continue;
-    if (errno == EAGAIN || errno == EWOULDBLOCK) return total;
+    if (errno == EAGAIN || errno == EWOULDBLOCK) {
+      if (waited_ms >= SER_WRITE_TIMEOUT_MS) {
+        LOG(LOG_WARN, "Serial TX stalled for %d ms (flow control / port not draining): dropped %d of %d bytes",
+            waited_ms, len - total, len);
+        return total;
+      }
+      struct pollfd p; p.fd = fd; p.events = POLLOUT; p.revents = 0;
+      int pr = poll(&p, 1, 250);
+      if (pr < 0 && errno != EINTR) return total;
+      if (pr > 0 && (p.revents & (POLLERR | POLLHUP | POLLNVAL))) return -1;
+      waited_ms += 250;
+      continue;
+    }
     return -1;
   }
   return total;
@@ -89,7 +115,7 @@ int ser_get_bps_const(int speed) {
       bps_rate = B0;
       break;
     default:
-      ELOG(LOG_FATAL, "Unknown baud rate"); 
+      LOG(LOG_DEBUG, "Unsupported baud rate %d", speed);   /* callers report it */
       bps_rate = -1;
   }
   LOG_EXIT();
@@ -216,7 +242,13 @@ int ser_get_control_lines(int fd) {
   int status;
 
   if (ioctl(fd, TIOCMGET, &status) < 0) {
-    ELOG(LOG_FATAL, "Could not obtain serial port status");
+    if (errno == ENOTTY) {
+      /* A pty or a device with no modem-control lines: treat as "link up,
+       * DTR asserted" instead of failing (lets tcpser run against a pty). */
+      return DCE_CL_LE | DCE_CL_DTR;
+    }
+    /* EIO/ENXIO/EBADF: the adapter is gone or being reopened. The caller
+     * (ctrl_thread) reports this once and waits; polled 10x/s so no ELOG here. */
     return -1;
   }
 
@@ -240,7 +272,8 @@ int ser_set_control_lines(int fd, int state) {
   int status;
 
   if(0 > ioctl(fd, TIOCMGET, &status)) {
-    ELOG(LOG_FATAL, "Could not obtain serial port status");
+    if(errno == ENOTTY) return 0;   /* pty: nothing to drive */
+    ELOG(LOG_WARN, "Could not obtain serial port status");
     return -1;
   }
 
@@ -267,6 +300,14 @@ int ser_read(int fd, unsigned char* data, int len) {
     res = (int)read(fd, data, (size_t)len);
   } while (res < 0 && errno == EINTR);
 
+  if(res == 0) {
+    /* With CLOCAL set and VMIN=1, a non-blocking tty never returns 0 for "no
+     * data" (that is EAGAIN). 0 is EOF: the USB adapter was unplugged (or the
+     * pty master closed). Report it as an error so bridge_task reconnects
+     * instead of spinning on a permanently-readable dead descriptor. */
+    errno = EIO;
+    return -1;
+  }
   if(res > 0)
     log_trace(TRACE_MODEM_IN, data, res);
   return res;

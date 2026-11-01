@@ -77,7 +77,7 @@ int main(int argc, char *argv[]) {
   port_config ports[MAX_PORTS];
   int port_count = 0;
 
-  char all_busy[255];
+  char all_busy[255] = {0};   /* read via strlen() later; was uninitialised when -B absent */
   int i;
   int rc = 0;
   int sSocket = 0;
@@ -204,10 +204,11 @@ int main(int argc, char *argv[]) {
       const char *sp = dashboard_get_stats_path();
       if(sp) dashboard_load_stats(sp);
     }
-    webserver_start();
-    fprintf(stderr, "  Web:     http://%s:%d/%s\n",
-            webserver_get_bind(), webserver_get_port(),
-            webserver_has_token() ? "  (token required)" : "");
+    if(webserver_start() == 0) {
+      fprintf(stderr, "  Web:     http://%s:%d/%s\n",
+              webserver_get_bind(), webserver_get_port(),
+              webserver_has_token() ? "  (token required)" : "");
+    }   /* failure already printed; previously we announced a URL that did not exist */
   }
 
   for(i = 0; i < modem_count; i++) {
@@ -226,7 +227,7 @@ int main(int argc, char *argv[]) {
 
   }
 
-  while(g_running) {
+  while(g_running && !dashboard_quit_requested()) {
     FD_ZERO(&readfs);
     max_fd = 0;
     for(i = 0; i < modem_count; i++) {
@@ -319,7 +320,7 @@ int main(int argc, char *argv[]) {
       }
     }
   }
-  LOG(LOG_INFO, "Shutting down (signal received)");
+  LOG(LOG_INFO, "Shutting down (%s)", dashboard_quit_requested() ? "dashboard quit" : "signal received");
   /* Graceful drain: ask each modem to hang up its caller cleanly (sends
    * NO CARRIER) instead of yanking the TCP connection out from under an
    * active session. Give them a brief moment to flush before we exit. */

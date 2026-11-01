@@ -1,17 +1,28 @@
 [Unit]
-Description=TCPSER TCP-to-Serial Bridge
-After=network.target
+Description=TCPSER TCP-to-Serial Bridge (hardened)
 Documentation=man:tcpser(1)
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/tcpser -d /dev/ttyUSB0 -s 2400 -p 6400 -x -w 8080 \
-  -P /usr/local/tcpser/scripts/prelogin.seq \
-  -G /usr/local/tcpser/scripts/accessgranted.seq \
+# NOTE: flags are case-sensitive and easy to confuse:
+#   -H PORT  web dashboard        (-w is the BBS watchdog in SECONDS)
+#   -E NAME  gate-success hook, a script NAME inside /usr/local/tcpser/scripts
+#   -B FILE  "all lines busy" screen sent to CALLERS (never point it at the blocklist)
+# The persistent blocklist path is set with TCPSER_BLOCKLIST (env), not a flag.
+ExecStart=/usr/local/bin/tcpser -d /dev/ttyUSB0 -s 2400 -p 6400 -x \
+  -P /usr/local/share/tcpser/prelogin.seq \
+  -G /usr/local/share/tcpser/accessgranted.seq \
   -O /var/log/tcpser/connections.csv \
-  -E /usr/local/tcpser/scripts \
-  -B /usr/local/share/tcpser/tcpser.blocklist
+  -Y /var/lib/tcpser/stats \
+  -L /var/log/tcpser/tcpser.log -l 4 \
+  -E gate_success_log \
+  -H 8080
 ExecReload=/bin/kill -HUP $MAINPID
+Environment=TCPSER_BLOCKLIST=/var/lib/tcpser/tcpser.blocklist
+# Dashboard token etc. (mode 0640 root:tcpser): TCPSER_DASH_TOKEN=...
+EnvironmentFile=-/etc/tcpser/tcpser.env
 KillMode=mixed
 KillSignal=SIGTERM
 TimeoutStopSec=30
@@ -19,6 +30,9 @@ Restart=always
 RestartSec=5
 User=tcpser
 Group=tcpser
+SupplementaryGroups=dialout
+LogsDirectory=tcpser
+StateDirectory=tcpser
 
 # Security hardening
 NoNewPrivileges=yes
@@ -29,23 +43,23 @@ ProtectKernelModules=yes
 ProtectControlGroups=yes
 RestrictRealtime=yes
 RestrictSUIDSGID=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 RemoveIPC=yes
 PrivateTmp=yes
 PrivateDevices=no
 DeviceAllow=/dev/ttyUSB0 rw
 DeviceAllow=/dev/null rw
 DevicePolicy=closed
-ReadWritePaths=/var/log/tcpser
 ReadOnlyPaths=/usr/local/share/tcpser
-ReadOnlyPaths=/usr/local/tcpser/scripts
+ReadOnlyPaths=-/usr/local/tcpser/scripts
 SystemCallFilter=@system-service
 SystemCallFilter=~@debug @mount @module @obsolete @reboot @swap
 SystemCallErrorNumber=EPERM
 LockPersonality=yes
 MemoryDenyWriteExecute=yes
 RestrictNamespaces=yes
-CapabilityBoundingSet=CAP_NET_BIND_SERVICE
-AmbientCapabilities=CAP_NET_BIND_SERVICE
+# Ports >= 1024 need no capability; drop everything.
+CapabilityBoundingSet=
 SeccompArchitectures=native
 
 [Install]

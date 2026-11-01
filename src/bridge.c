@@ -723,22 +723,22 @@ static int preconnect_gate(modem_config *cfg) {
   preconnect_write(fd, "\r\nTimeout. Disconnecting.\r\n");
   return FALSE;
 }
-/* Execute a script securely after a successful gate.
+/* Launch a script securely after a successful gate.
  * Scripts must be in TCPSER_SCRIPT_DIR and follow naming restrictions.
- * Useful for playing a sound, notifying, etc. Does not block. */
+ * Useful for playing a sound, notifying, etc. Truly asynchronous: a detached
+ * supervisor process enforces the 30 s timeout and logs the outcome. */
 static void run_gate_success_script(modem_config *cfg) {
   if(cfg->on_gate_success_script[0] == 0) return;
 
-  LOG(LOG_DEBUG, "Executing gate success script: %s", cfg->on_gate_success_script);
+  LOG(LOG_DEBUG, "Launching gate success script: %s", cfg->on_gate_success_script);
 
-  /* Execute script securely with 30-second timeout */
   int result = execute_script_secure(cfg->on_gate_success_script,
                                      cfg->line_data.peer_ip,
                                      30);
 
   switch(result) {
     case SCRIPT_OK:
-      LOG(LOG_DEBUG, "Gate script executed successfully");
+      LOG(LOG_DEBUG, "Gate script launched");
       break;
     case SCRIPT_INVALID_NAME:
       LOG(LOG_ERROR, "Invalid script name: %s (use alphanumeric, dash, underscore only)",
@@ -945,7 +945,8 @@ int accept_connection(modem_config *cfg) {
       webhook_notify("GATE_FAIL", cfg->line_data.peer_ip);
       ip_note_fail(cfg->line_data.peer_ip, cfg->gate_max_fails, 600);
       line_disconnect(&cfg->line_data);
-      LOG(LOG_INFO, "Pre-connect gate failed; disconnected before touching serial");
+      LOG(LOG_INFO, "Pre-connect gate failed for %s; disconnected before touching serial",
+          cfg->line_data.peer_ip);
       LOG_EXIT();
       return 0;
     }
@@ -1160,10 +1161,31 @@ void *ctrl_thread(void *arg) {
   modem_config* cfg = (modem_config *)arg;
   int status;
   int new_status;
+  int lost_reported = FALSE;
 
   LOG_ENTER();
   status = dce_get_control_lines(&cfg->dce_data);
-  while(status > -1) {
+  for(;;) {
+    if(status < 0) {
+      /* Serial status unavailable: the USB adapter vanished or the port is
+       * being reopened by bridge_task. This used to exit(-1) the whole
+       * process — which is why the advertised USB auto-reconnect never ran.
+       * Tell bridge_task once, then poll until the port answers again. */
+      if(!lost_reported) {
+        LOG(LOG_WARN, "Control-line status unavailable on %s — serial port lost? Waiting for it to return",
+            cfg->dce_data.tty);
+        writePipe(cfg->wp[0][1], MSG_SER_LOST);
+        lost_reported = TRUE;
+      }
+      usleep(500000);
+      if(cfg->dce_data.is_connected && cfg->dce_data.fd >= 0)
+        status = dce_get_control_lines(&cfg->dce_data);
+      if(status >= 0) {
+        LOG(LOG_INFO, "Control-line status restored on %s", cfg->dce_data.tty);
+        lost_reported = FALSE;
+      }
+      continue;
+    }
     new_status = dce_check_control_lines(&cfg->dce_data);
     if(new_status > -1 && status != new_status) {
       LOG(LOG_DEBUG, "Control Line Change");
@@ -1189,36 +1211,50 @@ void *ctrl_thread(void *arg) {
     status = new_status;
   }
   LOG_EXIT();
-  // need to quit application, as status cannot be obtained.
-  exit(-1);
+  return NULL;
 }
 
-/* Try to reconnect a lost serial port (USB adapter unplugged/glitch).
- * Closes the old fd, waits for the device to reappear, and reopens it.
- * Returns 0 on success, -1 if the device never came back.
+/* Reconnect a lost serial port (USB adapter unplugged/glitch).
+ * Closes the old fd and keeps waiting for the device to reappear — forever.
+ * Exiting the process here only trades a recoverable outage for a restart
+ * that loses live state; the operator is warned once a minute instead.
+ * Returns 0 on success, -1 only for ip232 (nothing to reopen).
  */
 static int serial_reconnect(dce_config *dce) {
   if(dce->is_ip232) return -1; /* only for real serial ports */
 
   LOG(LOG_WARN, "Serial port %s lost — attempting reconnect", dce->tty);
 
-  if(dce->fd >= 0) { close(dce->fd); dce->fd = -1; }
   dce->is_connected = FALSE;
+  if(dce->fd >= 0) { close(dce->fd); dce->fd = -1; }
 
-  /* Wait up to 60 seconds for the device to reappear */
-  for(int attempt = 0; attempt < 30; attempt++) {
+  for(int attempt = 1; ; attempt++) {
     usleep(2000000); /* 2 seconds */
     if(access(dce->tty, R_OK | W_OK) == 0) {
       int rc = dce_connect(dce);
       if(rc >= 0) {
-        LOG(LOG_INFO, "Serial port %s reconnected (attempt %d)", dce->tty, attempt + 1);
+        LOG(LOG_INFO, "Serial port %s reconnected (attempt %d)", dce->tty, attempt);
         return 0;
       }
     }
-    LOG(LOG_DEBUG, "Waiting for %s... (%d/30)", dce->tty, attempt + 1);
+    if(attempt % 30 == 0)
+      LOG(LOG_WARN, "Serial port %s still missing after %d s — waiting", dce->tty, attempt * 2);
+    else
+      LOG(LOG_DEBUG, "Waiting for %s... (attempt %d)", dce->tty, attempt);
   }
-  LOG(LOG_FATAL, "Serial port %s did not reappear after 60s", dce->tty);
-  return -1;
+}
+
+/* Common handling once bridge_task knows the serial port is gone. */
+static void handle_serial_lost(modem_config *cfg) {
+  if(cfg->dce_data.is_ip232) return;
+  if(cfg->conn_type != MDM_CONN_NONE) {
+    /* The caller's BBS just vanished under them: drop the call cleanly. */
+    LOG(LOG_WARN, "Serial port lost during a call — hanging up the caller");
+    mdm_disconnect(cfg, TRUE);
+  }
+  serial_reconnect(&cfg->dce_data);
+  dashboard_set_serial_fd(cfg->dce_data.fd);
+  mdm_set_control_lines(cfg);
 }
 
 void *bridge_task(void *arg) {
@@ -1272,6 +1308,9 @@ void *bridge_task(void *arg) {
   if(cfg->cur_line_idx) {
     mdm_parse_cmd(cfg);
   }
+  /* Everything the operator configured (-I, -i "&C0&K3E0", ...) is now in
+   * effect: snapshot it so ATZ / AT&F restore it instead of factory defaults. */
+  mdm_save_profile(cfg);
   if (cfg->direct_conn == TRUE) {
     if(strlen((char *)cfg->direct_conn_num) > 0 &&
        cfg->direct_conn_num[0] != ':') {
@@ -1387,11 +1426,7 @@ void *bridge_task(void *arg) {
     if(rc == -1) {
       if(errno == EBADF && !cfg->dce_data.is_ip232) {
         LOG(LOG_WARN, "Select EBADF — serial port may be lost");
-        if(serial_reconnect(&cfg->dce_data) < 0) {
-          LOG(LOG_FATAL, "Serial port permanently lost, exiting");
-          exit(-1);
-        }
-        mdm_set_control_lines(cfg);
+        handle_serial_lost(cfg);
         continue;
       }
       ELOG(LOG_WARN, "Select returned error");
@@ -1490,16 +1525,15 @@ void *bridge_task(void *arg) {
         mdm_disconnect(cfg, FALSE);
       }
     }
-    if (FD_ISSET(cfg->dce_data.fd, &readfs)) {  // serial port
+    /* fd is -1 in ip232 mode until the emulator attaches; FD_ISSET(-1) is UB
+     * and aborts under glibc's _FORTIFY_SOURCE=2. Mirror the FD_SET guard. */
+    if (cfg->dce_data.is_connected && cfg->dce_data.fd >= 0
+        && FD_ISSET(cfg->dce_data.fd, &readfs)) {  // serial port
       LOG(LOG_DEBUG, "Data available on serial port");
       res = mdm_read(cfg, buf, sizeof(buf));
       if(res < 0 && !cfg->dce_data.is_ip232) {
         /* Serial port error — USB adapter may have disconnected */
-        if(serial_reconnect(&cfg->dce_data) < 0) {
-          LOG(LOG_FATAL, "Serial port permanently lost, exiting");
-          exit(-1);
-        }
-        mdm_set_control_lines(cfg);
+        handle_serial_lost(cfg);
         continue;
       }
       if(res > 0) {
@@ -1550,6 +1584,14 @@ void *bridge_task(void *arg) {
             case MSG_DTR_UP:
               // no-op by default
               break;
+            case MSG_SER_LOST:
+              /* ctrl_thread's TIOCMGET failed. Confirm before tearing down:
+               * a transient error must not drop a healthy port. */
+              if(!cfg->dce_data.is_ip232 && cfg->dce_data.is_connected &&
+                 dce_get_control_lines(&cfg->dce_data) < 0) {
+                handle_serial_lost(cfg);
+              }
+              break;
             default:
               break;
           }
@@ -1587,28 +1629,14 @@ void *bridge_task(void *arg) {
           LOG(LOG_INFO, "Dashboard reset requested");
           mdm_disconnect(cfg, TRUE);
           /* Reset modem emulation state only — preserve pipes, serial fd, etc. */
-          cfg->send_responses = TRUE;
-          cfg->connect_response = 0;
-          cfg->response_code_level = 4;
-          cfg->text_responses = TRUE;
-          cfg->is_echo = TRUE;
           cfg->is_cmd_mode = TRUE;
           cfg->is_off_hook = FALSE;
           cfg->is_ringing = FALSE;
-          cfg->dtr_mode = 2;
           cfg->break_len = 0;
           cfg->pre_break_delay = FALSE;
           cfg->cur_line_idx = 0;
           cfg->rings = 0;
-          for(int j = 0; j < 100; j++) cfg->s[j] = 0;
-          cfg->s[S_REG_BREAK] = 43; cfg->s[S_REG_CR] = 13;
-          cfg->s[S_REG_LF] = 10; cfg->s[S_REG_BS] = 8;
-          cfg->s[S_REG_BLIND_WAIT] = 2; cfg->s[S_REG_CARRIER_WAIT] = 50;
-          cfg->s[S_REG_COMMA_PAUSE] = 2; cfg->s[S_REG_CARRIER_TIME] = 6;
-          cfg->s[S_REG_CARRIER_LOSS] = 14; cfg->s[S_REG_DTMF_TIME] = 95;
-          cfg->s[S_REG_GUARD_TIME] = 50;
-          cfg->crlf[0] = 13; cfg->crlf[1] = 10; cfg->crlf[2] = 0;
-          mdm_set_control_lines(cfg);
+          mdm_reset_profile(cfg);   /* same path as ATZ / AT&F */
           break;
       }
     }

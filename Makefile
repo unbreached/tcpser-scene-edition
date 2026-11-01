@@ -16,7 +16,11 @@ LDFLAGS = -lpthread -fPIE
 ifeq ($(UNAME_S),Linux)
 LDFLAGS += -pie -Wl,-z,relro,-z,now
 endif
-DEPEND = makedepend $(DEF) $(CFLAGS)
+# Automatic header dependency tracking (gcc/clang): editing a .h now rebuilds
+# every .c that includes it. Previously only the touched .c was recompiled, so
+# a struct change in modem_core.h left other objects with a stale layout.
+DEPFLAGS = -MMD -MP
+DEPS = $(OBJS:.o=.d)
 
 # Install paths (override with: make install PREFIX=/opt/tcpser)
 PREFIX ?= /usr/local
@@ -28,7 +32,9 @@ DESTDIR ?=
 all:	tcpser
 
 $(SRC)/%.o: $(SRC)/%.c
-	$(CC) $(CFLAGS) -c -o $@ $<
+	$(CC) $(CFLAGS) $(DEPFLAGS) -c -o $@ $<
+
+-include $(DEPS)
 
 tcpser: $(OBJS)
 	$(CC) $(OBJS) $(LDFLAGS) -o $@
@@ -62,12 +68,11 @@ uninstall:
 	rm -f $(DESTDIR)$(MANDIR)/tcpser.1
 	rm -rf $(DESTDIR)$(DATADIR)
 
-depend: $(SRCS)
-	$(DEPEND) $(SRCS)
+depend:
+	@echo "Header dependencies are tracked automatically (-MMD); nothing to do."
 
 clean:
-	-rm -f tcpser *.bak $(SRC)/*~ $(SRC)/*.o $(SRC)/*.bak core
+	-rm -f tcpser *.bak $(SRC)/*~ $(SRC)/*.o $(SRC)/*.d $(SRC)/*.bak core
 
 .PHONY: all install uninstall depend clean
 
-# DO NOT DELETE THIS LINE -- make depend depends on it.

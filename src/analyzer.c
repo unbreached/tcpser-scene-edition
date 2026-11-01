@@ -31,6 +31,7 @@
 #include <errno.h>
 
 #include "analyzer.h"
+#include "version.h"
 
 /* ---- test matrix ---------------------------------------------------- */
 
@@ -327,7 +328,7 @@ int analyzer_run(const char *tty, int speed) {
 
   printf("\n");
   printf("  ============================================\n");
-  printf("  RS232 Analyzer for tcpser-frozen\n");
+  printf("  RS232 Analyzer for tcpser %s\n", VERSION);
   printf("  ============================================\n");
   printf("  Port:  %s\n", tty);
   printf("  Speed: %d baud (all speeds will be tested)\n", speed);

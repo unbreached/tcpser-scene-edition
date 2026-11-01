@@ -1,27 +1,65 @@
 [Unit]
-Description=TCPSER - Hayes Modem Emulator over TCP/IP
+Description=TCPSER - Hayes Modem Emulator over TCP/IP (C64 BBS bridge)
 Documentation=man:tcpser(1)
-After=network.target
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
 
-# Edit these to match your setup:
-ExecStart=/usr/local/bin/tcpser -d /dev/ttyUSB0 -s 2400 -p 6400 -l 4 -L /var/log/tcpser.log -x
+# --- Edit these to match your setup -------------------------------------
+# Serial device + speed, TCP port, BACKSPACE-x2 bot gate (-x), banner/granted
+# screens, connection CSV, web dashboard on localhost:8080.
+# Password gate instead of -x:  -k env:TCPSER_GATE_PASSWORD  (set it in the
+# EnvironmentFile below, never on the command line).
+ExecStart=/usr/local/bin/tcpser -d /dev/ttyUSB0 -s 2400 -p 6400 -x \
+  -P /usr/local/share/tcpser/prelogin.seq \
+  -G /usr/local/share/tcpser/accessgranted.seq \
+  -O /var/log/tcpser/connections.csv \
+  -Y /var/lib/tcpser/stats \
+  -L /var/log/tcpser/tcpser.log -l 4 \
+  -H 8080
 ExecReload=/bin/kill -HUP $MAINPID
+
+# Persistent blocklist must live somewhere the service can WRITE; the data
+# dir under /usr/local/share is read-only under ProtectSystem=strict.
+Environment=TCPSER_BLOCKLIST=/var/lib/tcpser/tcpser.blocklist
+# Optional: dashboard token / secrets. Create the file mode 0640 root:tcpser.
+EnvironmentFile=-/etc/tcpser/tcpser.env
 
 Restart=on-failure
 RestartSec=5
+KillMode=mixed
+TimeoutStopSec=15
 
-# Security hardening
+# --- Run unprivileged -----------------------------------------------------
+# useradd --system --no-create-home --shell /usr/sbin/nologin -G dialout tcpser
+User=tcpser
+Group=tcpser
+SupplementaryGroups=dialout
+# systemd creates these with the right owner (and ReadWritePaths for them):
+LogsDirectory=tcpser
+StateDirectory=tcpser
+
+# --- Hardening ------------------------------------------------------------
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/var/log/tcpser.log
-ReadWritePaths=/usr/local/share/tcpser/tcpser.blocklist
-
-# Allow access to serial devices
-SupplementaryGroups=dialout
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictNamespaces=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+DevicePolicy=closed
+DeviceAllow=/dev/ttyUSB0 rw
+DeviceAllow=/dev/null rw
+# Gate hooks (-E) live here and must NOT be writable by the service user.
+ReadOnlyPaths=-/usr/local/tcpser/scripts
 
 [Install]
 WantedBy=multi-user.target

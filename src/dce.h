@@ -42,6 +42,7 @@ typedef struct dce_config {
   int ip232_dtr;
   int ip232_dcd;
   int ip232_iac;
+  int flow_control;   /* last MDM_FC_* opts applied (so ATZ/&F can restore them) */
 } dce_config;
 
 void dce_init_config(dce_config *cfg);

@@ -9,6 +9,8 @@
 #include <pthread.h>
 #include <errno.h>
 
+#include <string.h>
+
 #include "util.h"
 #include "debug.h"
 #include "dce.h"
@@ -68,7 +70,33 @@ int ip232_init_conn(dce_config *cfg) {
 
   LOG_ENTER();
   LOG(LOG_INFO, "Opening ip232 device");
-  rc = ip_init_server_conn(cfg->tty, 25232);
+
+  /* SECURITY: the ip232 side is the *trusted* "C64" channel — whoever connects
+   * here drives the AT parser (ATDT = outbound TCP to anywhere, i.e. an open
+   * proxy) and becomes the BBS for real callers. It used to bind 0.0.0.0 with
+   * no authentication. Default to loopback (VICE normally runs on the same
+   * host); TCPSER_IP232_BIND=<addr> overrides for a remote emulator, with a
+   * loud warning. cfg->tty holds the port number (or addr:port) given to -v. */
+  {
+    char bind_spec[300];
+    const char *bind_env = getenv("TCPSER_IP232_BIND");
+    const char *bind_addr = (bind_env && bind_env[0]) ? bind_env : "127.0.0.1";
+    if(strchr(cfg->tty, ':') != NULL) {
+      /* operator gave an explicit addr:port on -v — honour it as-is */
+      snprintf(bind_spec, sizeof(bind_spec), "%s", cfg->tty);
+    } else {
+      snprintf(bind_spec, sizeof(bind_spec), "%s:%s", bind_addr, cfg->tty);
+    }
+    if(strncmp(bind_spec, "127.", 4) != 0 && strncmp(bind_spec, "localhost:", 10) != 0) {
+      LOG(LOG_WARN, "ip232 port bound to %s with NO authentication — anyone who can "
+                    "reach it controls the modem (open proxy via ATDT, BBS impersonation). "
+                    "Firewall it or use 127.0.0.1.", bind_spec);
+      fprintf(stderr, "  WARNING: ip232 (-v) listener bound to %s with no authentication.\n"
+                      "           Anyone who can reach it controls the modem. Firewall it.\n",
+              bind_spec);
+    }
+    rc = ip_init_server_conn(bind_spec, 25232);
+  }
 
   if (rc < 0) {
     ELOG(LOG_FATAL, "Could not initialize ip232 server socket");

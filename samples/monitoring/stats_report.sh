@@ -72,19 +72,19 @@ if [[ -f "$CONNECTIONS_LOG" ]]; then
 
     # Successful connections
     SUCCESSFUL=$(awk -F, -v start="$START_DATE" '
-        NR>1 && $1 >= start && $5 == "CONNECTED" { count++ }
+        NR>1 && $1 >= start && $3 == "CONNECTED" { count++ }
         END { print count+0 }
     ' "$CONNECTIONS_LOG" 2>/dev/null)
 
     # Blocked connections
     BLOCKED=$(awk -F, -v start="$START_DATE" '
-        NR>1 && $1 >= start && $5 == "BLOCKED" { count++ }
+        NR>1 && $1 >= start && ($3 == "BLOCKED" || $3 == "RATE_LIMITED") { count++ }
         END { print count+0 }
     ' "$CONNECTIONS_LOG" 2>/dev/null)
 
     # Gate failures
     GATE_FAIL=$(awk -F, -v start="$START_DATE" '
-        NR>1 && $1 >= start && ($5 == "GATE-FAIL" || $5 == "GATE-PASS") { count++ }
+        NR>1 && $1 >= start && $3 == "GATE_FAIL" { count++ }
         END { print count+0 }
     ' "$CONNECTIONS_LOG" 2>/dev/null)
 
@@ -111,7 +111,8 @@ if [[ -f "$CONNECTIONS_LOG" ]]; then
     echo "Hourly Distribution:"
     awk -F, -v start="$START_DATE" '
         NR>1 && $1 >= start {
-            split($3, time, ":")
+            # $1 is "YYYY-MM-DD HH:MM:SS"; take the hour from the time part
+            split($1, dt, " "); split(dt[2], time, ":")
             hour = time[1]
             count[hour]++
         }
@@ -179,7 +180,7 @@ if [[ -f "$FAILURES_LOG" ]]; then
     if [[ $RECENT_FAILURES -gt 0 ]]; then
         echo "  Recent failure IPs:"
         grep "$(date '+%Y-%m-%d')" "$FAILURES_LOG" 2>/dev/null | \
-        awk '{print $4}' | sort | uniq -c | sort -nr | head -5 | \
+        awk '{print $NF}' | sort | uniq -c | sort -nr | head -5 | \
         while read count ip; do
             echo "    $ip: $count failures"
         done

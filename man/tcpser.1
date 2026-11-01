@@ -25,10 +25,12 @@ diagnosing adapter wiring.
 .SS "Serial Port"
 .TP
 .BI \-d " device"
-Serial device (e.g. /dev/ttyUSB0).  Cannot be used with \-v.
+Serial device (e.g. /dev/ttyUSB0).  May be repeated, and mixed with \-v, for a multi-line BBS.
 .TP
 .BI \-v " port"
-Virtual RS232 via TCP (ip232 mode).  Cannot be used with \-d.
+Virtual RS232 via TCP (ip232 mode, e.g. VICE).  Binds 127.0.0.1 by default;
+set TCPSER_IP232_BIND to expose it (whoever reaches this port controls the
+modem, so firewall it).  May be repeated, and mixed with \-d.
 .TP
 .BI \-s " speed"
 Serial port speed (default: 38400).
@@ -59,7 +61,9 @@ so the whole session runs at that rate.  Example:
 .SS "Network"
 .TP
 .BI \-p " port"
-TCP listen port or address:port (default: 6400).
+TCP listen port, optionally restricted to specific modems:
+.IR port [: modem , modem ...]
+(default: 6400, all modems).  Example: \-p 23:0,1 \-p 64128:2.
 .TP
 .BI \-n " number=address"
 Phone book entry (e.g. \-n 5551212=bbs.example.com:23).
@@ -92,9 +96,11 @@ any gate or serial traffic.  Can be PETSCII or ANSI.
 Access granted screen file.  Sent after successful gate.  If not
 specified, a default green "ACCESS GRANTED" message is shown.
 .TP
-.BI \-E " command"
-External command to execute asynchronously after successful gate.
-Environment variable TCPSER_PEER_IP contains the caller's IP.
+.BI \-E " name"
+Script to run after a successful gate: a file NAME (letters, digits, - _ .)
+inside /usr/local/tcpser/scripts/, not a path.  Runs detached (the caller is
+not delayed) and is killed after 30 seconds.  No arguments are passed; the
+environment variable TCPSER_PEER_IP contains the caller's IP.
 .SS "Event Files"
 .TP
 .BI \-a " file"
@@ -171,10 +177,11 @@ targets.  Requires the \fBcurl\fP binary on PATH.
 .SS "Tools"
 .TP
 .B \-Z
-RS232 analyzer mode.  Interactive diagnostic that probes control line
-wiring, sweeps 90 combinations of baud rate, flow control, and parity,
-detects the cartridge type (SwiftLink, Turbo232, GLINK232, userport),
-and recommends the correct tcpser flags.  Requires \-d.
+RS232 analyzer mode.  Interactive diagnostic that detects the baud rate
+from the BBS's AT init, probes control-line wiring (DTR/RTS toggling), verifies
+an OK exchange, infers the cartridge type (SwiftLink, Turbo232, GLINK232,
+userport) and recommends tcpser flags.  Flow control and parity are not
+probed.  Requires \-d.
 .TP
 .B \-V
 Print version and exit.
@@ -185,9 +192,11 @@ Show help summary and exit.
 Options \-d/\-v can be repeated for multi-line BBS configurations.
 Options \-s, \-S, \-i, and gate settings propagate to subsequent modems.
 .PP
-DCD defaults to always-asserted (equivalent to AT&C0) because all
-6551 ACIA-based cartridges (SwiftLink, Turbo232, GLINK232) disable
-their receiver when DCD is inactive.
+DCD follows carrier by default (AT&C1).  6551 ACIA-based cartridges
+(SwiftLink, Turbo232, GLINK232) disable their receiver when DCD is inactive;
+if your BBS needs DCD asserted while idle, use \-i &C0 (or \-I to invert the
+line).  ATZ and AT&F restore the settings given with \-i and \-I, not factory
+defaults.
 .SH EXAMPLES
 Basic BBS hosting:
 .PP

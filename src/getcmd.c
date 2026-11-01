@@ -64,17 +64,24 @@ int getData(char line[],
   return 0;
 }
 
+/* Parse a decimal number. Digit runs longer than an int can hold (serial side
+ * can send "ATS2=99999999999999999999") used to overflow `int` (UB, caught by
+ * UBSan). Saturate instead; every consumer range-checks the result anyway. */
 int getNumber(char line[], int *index, int len) {
-  int num = 0;
+  long long num = 0;
   int found = FALSE;
 
   while(*index < len && 0 != isdigit((unsigned char)line[*index])) {
-    num = num * 10 + line[(*index)++] - '0';
+    if(num <= 0x7fffffffLL) {   /* stop accumulating once saturated */
+      num = num * 10 + (line[*index] - '0');
+      if(num > 0x7fffffffLL) num = 0x7fffffffLL;
+    }
+    (*index)++;
     found = 1;
   }
   if(FALSE == found)
     return -1;
-  return num;
+  return (int)num;
 }
 
 int skip(char line[], int *index, int len, char ch) {

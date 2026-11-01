@@ -50,8 +50,26 @@ typedef enum {
 #include "line.h"
 #include "nvt.h"
 
-typedef struct x_config {
-} x_config;
+/* Operator profile: the modem settings in force after the -i init string and
+ * command-line flags (-I etc.) have been applied. ATZ / AT&F restore THIS, the
+ * way a real modem restores its stored profile, instead of compiled-in factory
+ * defaults — otherwise the first ATZ every C64 BBS sends wiped the operator's
+ * inverted-DCD / &C0 / &K3 wiring configuration. */
+typedef struct mdm_profile {
+  int valid;
+  int send_responses;
+  int connect_response;
+  int response_code_level;
+  int text_responses;
+  int is_echo;
+  int dtr_mode;
+  int force_dsr;
+  int force_dcd;
+  int invert_dsr;
+  int invert_dcd;
+  int flow_control;
+  int s[100];
+} mdm_profile;
 
 enum {
   S_REG_RINGS = 0,
@@ -161,16 +179,20 @@ typedef struct modem_config {
   int  baud_menu_count;
   int  baud_menu_speed[BAUD_MENU_MAX];   // e.g. 9600
   int  baud_menu_poke[BAUD_MENU_MAX];    // POKE 838 value that selects that speed
+
+  mdm_profile profile;                   // restored by ATZ / AT&F (see mdm_save_profile)
 } modem_config;
 
 void mdm_init(void);
 void mdm_init_config(modem_config *cfg);
+void mdm_save_profile(modem_config *cfg);
+void mdm_reset_profile(modem_config *cfg);
 int get_new_cts_state(modem_config *cfg, int up);
 int get_new_dsr_state(modem_config *cfg, int up);
 int get_new_dcd_state(modem_config *cfg, int up);
 int mdm_set_control_lines(modem_config *cfg);
 void mdm_write_char(modem_config *cfg, unsigned char data);
-void mdm_write(modem_config *cfg, unsigned char *data, int len);
+int  mdm_write(modem_config *cfg, unsigned char *data, int len);
 void mdm_send_response(int msg, modem_config *cfg);
 int mdm_off_hook(modem_config *cfg);
 int mdm_answer(modem_config *cfg);
