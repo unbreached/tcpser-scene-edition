@@ -13,3 +13,4 @@ core
 .idea/
 src/*.d
 build/
+src/web_assets.c

@@ -1,6 +1,14 @@
+.DEFAULT_GOAL := all
 SRC=src
-SRCS = $(SRC)/bridge.c $(SRC)/debug.c $(SRC)/getcmd.c $(SRC)/ip.c $(SRC)/init.c $(SRC)/modem_core.c $(SRC)/nvt.c $(SRC)/serial.c $(SRC)/ip232.c $(SRC)/util.c $(SRC)/phone_book.c $(SRC)/tcpser.c $(SRC)/line.c $(SRC)/dce.c $(SRC)/analyzer.c $(SRC)/dashboard.c $(SRC)/connlog.c $(SRC)/webhook.c $(SRC)/webserver.c $(SRC)/secure_script.c $(SRC)/secure_paths.c $(SRC)/secure_http.c
-OBJS = $(SRC)/bridge.o $(SRC)/debug.o $(SRC)/getcmd.o $(SRC)/ip.o $(SRC)/init.o $(SRC)/modem_core.o $(SRC)/nvt.o $(SRC)/serial.o $(SRC)/ip232.o $(SRC)/util.o $(SRC)/phone_book.o $(SRC)/tcpser.o $(SRC)/dce.o $(SRC)/line.o $(SRC)/analyzer.o $(SRC)/dashboard.o $(SRC)/connlog.o $(SRC)/webhook.o $(SRC)/webserver.o $(SRC)/secure_script.o $(SRC)/secure_paths.o $(SRC)/secure_http.o
+SRCS = $(SRC)/bridge.c $(SRC)/debug.c $(SRC)/getcmd.c $(SRC)/ip.c $(SRC)/init.c $(SRC)/modem_core.c $(SRC)/nvt.c $(SRC)/serial.c $(SRC)/ip232.c $(SRC)/util.c $(SRC)/phone_book.c $(SRC)/tcpser.c $(SRC)/line.c $(SRC)/dce.c $(SRC)/analyzer.c $(SRC)/dashboard.c $(SRC)/connlog.c $(SRC)/webhook.c $(SRC)/webserver.c $(SRC)/secure_script.c $(SRC)/secure_paths.c $(SRC)/secure_http.c $(SRC)/web_assets.c
+OBJS = $(SRC)/bridge.o $(SRC)/debug.o $(SRC)/getcmd.o $(SRC)/ip.o $(SRC)/init.o $(SRC)/modem_core.o $(SRC)/nvt.o $(SRC)/serial.o $(SRC)/ip232.o $(SRC)/util.o $(SRC)/phone_book.o $(SRC)/tcpser.o $(SRC)/dce.o $(SRC)/line.o $(SRC)/analyzer.o $(SRC)/dashboard.o $(SRC)/connlog.o $(SRC)/webhook.o $(SRC)/webserver.o $(SRC)/secure_script.o $(SRC)/secure_paths.o $(SRC)/secure_http.o $(SRC)/web_assets.o
+
+# Web dashboard static files live in src/web/ and are embedded into the binary
+# at build time (POSIX sh + od, no extra tools). Edit the files there, not the
+# generated web_assets.c.
+WEB_FILES = $(SRC)/web/index.html $(SRC)/web/app.js $(SRC)/web/style.css
+$(SRC)/web_assets.c: $(WEB_FILES) tools/embed.sh
+	sh tools/embed.sh $@ $(WEB_FILES)
 CC = gcc
 DEF =
 UNAME_S := $(shell uname -s)
@@ -72,7 +80,7 @@ depend:
 	@echo "Header dependencies are tracked automatically (-MMD); nothing to do."
 
 clean:
-	-rm -f tcpser *.bak $(SRC)/*~ $(SRC)/*.o $(SRC)/*.d $(SRC)/*.bak core
+	-rm -f tcpser *.bak $(SRC)/*~ $(SRC)/*.o $(SRC)/*.d $(SRC)/*.bak $(SRC)/web_assets.c core
 	-rm -rf build
 
 # ---- tests ---------------------------------------------------------------

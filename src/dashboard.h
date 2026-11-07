@@ -5,6 +5,27 @@
 
 #define DASH_TRAFFIC_LINES 16
 #define DASH_HISTORY_LINES 12
+#define DASH_MAX_LINES     8     /* modem lines tracked individually */
+#define DASH_EVENTS        16    /* system events ring (web "Events" panel) */
+
+/* One modem line (one -d/-v) as the dashboards see it. */
+typedef struct {
+  int    inited;
+  char   device[64];
+  int    speed;
+  int    connected;             /* caller online on this line */
+  char   peer_ip[64];
+  time_t session_start;
+  unsigned long bytes_in;       /* this session */
+  unsigned long bytes_out;
+  int    dtr;                   /* BBS DTR as seen on the serial port (1 = asserted) */
+  void  *cfg;                   /* modem_config*, for web/TUI actions */
+} dash_line_t;
+
+typedef struct {
+  time_t when;
+  char   text[80];
+} dash_event_t;
 
 typedef struct {
   char dir[16];
@@ -62,6 +83,11 @@ typedef struct {
   int history_head;
   int history_count;
 
+  dash_line_t  lines[DASH_MAX_LINES];
+  dash_event_t events[DASH_EVENTS];
+  int events_head;
+  int events_count;
+
   int enabled;
 } dashboard_state_t;
 
@@ -75,8 +101,13 @@ void dashboard_set_modem_cfg(void *cfg);
 void dashboard_lock(void);
 void dashboard_unlock(void);
 void dashboard_event(int type, unsigned char *data, int len);
-void dashboard_set_connected(int connected, const char *peer_ip);
-void dashboard_set_lines(int dcd, int dsr);
+/* per-line state (idx = modem_config.idx) */
+void dashboard_line_init(int idx, const char *device, int speed, void *cfg);
+void dashboard_line_state(int idx, int connected, const char *peer_ip);
+void dashboard_line_closed(int idx);          /* records the history entry */
+void dashboard_line_dtr(int idx, int dtr);
+/* system event for the Events panel (printf-style, <= 79 chars kept) */
+void dashboard_note(const char *fmt, ...);
 void dashboard_stat_connection(const char *ip);
 void dashboard_stat_blocked(const char *ip);
 void dashboard_stat_gate(int passed, const char *ip);

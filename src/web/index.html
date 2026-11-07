@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>tcpser dashboard</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand">
+    <span class="shade" aria-hidden="true">▓▒░</span>
+    <h1 id="bbs-name">TCPSER</h1>
+    <span class="shade" aria-hidden="true">░▒▓</span>
+  </div>
+  <div class="live" id="live" role="status" aria-live="polite">
+    <span class="dot" id="live-dot" aria-hidden="true"></span>
+    <span id="live-text">connecting…</span>
+    <span class="sep" aria-hidden="true">·</span>
+    <span>up <span id="uptime" class="num">–</span></span>
+    <span class="sep" aria-hidden="true">·</span>
+    <span>tcpser <span id="version">–</span></span>
+  </div>
+</header>
+
+<section class="lines" id="lines" aria-label="Modem lines"></section>
+
+<section class="counters" aria-label="Counters">
+  <div class="chip"><span class="k">calls</span><span class="v num" id="c-conn">–</span></div>
+  <div class="chip"><span class="k">gate pass</span><span class="v num ok" id="c-pass">–</span></div>
+  <div class="chip"><span class="k">gate fail</span><span class="v num warn" id="c-fail">–</span></div>
+  <div class="chip"><span class="k">dropped</span><span class="v num danger" id="c-drop" title="blocklist + rate limit">–</span></div>
+  <div class="chip"><span class="k">in</span><span class="v num" id="c-in">–</span></div>
+  <div class="chip"><span class="k">out</span><span class="v num" id="c-out">–</span></div>
+</section>
+
+<div class="grid">
+  <section class="panel" aria-labelledby="h-callers">
+    <h2 id="h-callers">Recent callers</h2>
+    <div class="scroll-x">
+    <table class="tbl" id="callers">
+      <thead><tr><th>Time</th><th>Caller</th><th>Result</th><th class="r">Dur</th><th class="r">↓</th><th class="r">↑</th></tr></thead>
+      <tbody></tbody>
+    </table>
+    </div>
+    <p class="empty" id="callers-empty">No calls yet.</p>
+  </section>
+
+  <section class="panel" aria-labelledby="h-traffic">
+    <div class="panel-head">
+      <h2 id="h-traffic">Live traffic</h2>
+      <div class="controls" role="group" aria-label="Traffic view">
+        <button class="seg on" data-mode="petscii" type="button">PETSCII</button>
+        <button class="seg" data-mode="ascii" type="button">ASCII</button>
+        <button class="seg" data-mode="hex" type="button">HEX</button>
+        <button class="seg pause" id="pause" type="button" aria-pressed="false">⏸ pause</button>
+      </div>
+    </div>
+    <p class="note" id="traffic-note" hidden>Payload content is hidden. Start tcpser with <code>TCPSER_DASH_TRAFFIC=1</code> (localhost + token only) to show what callers and the BBS send.</p>
+    <ol class="feed" id="feed" aria-live="off"></ol>
+    <p class="empty" id="feed-empty">No traffic yet.</p>
+  </section>
+</div>
+
+<div class="grid">
+  <section class="panel" aria-labelledby="h-block">
+    <div class="panel-head">
+      <h2 id="h-block">Blocklist <span class="count num" id="block-count"></span></h2>
+      <button class="btn" id="unblock" type="button">Clear timed blocks</button>
+    </div>
+    <ul class="list" id="blocklist"></ul>
+    <p class="empty" id="block-empty">Nothing blocked.</p>
+  </section>
+
+  <section class="panel" aria-labelledby="h-events">
+    <h2 id="h-events">Events</h2>
+    <ul class="list" id="events"></ul>
+    <p class="empty" id="events-empty">Nothing yet.</p>
+  </section>
+</div>
+
+<section class="panel locked" id="locked" hidden>
+  <h2>Dashboard locked</h2>
+  <p>This dashboard requires a token. Open <code>http://&lt;host&gt;:&lt;port&gt;/?token=YOUR_TOKEN</code> once; the page then keeps you signed in with a cookie.</p>
+</section>
+
+<footer class="foot">
+  <span id="gate">gate –</span>
+  <span class="sep" aria-hidden="true">·</span>
+  <span>listen <span class="num" id="listen">–</span></span>
+  <span class="sep" aria-hidden="true">·</span>
+  <a href="/metrics" id="metrics-link">/metrics</a>
+  <span class="sep" aria-hidden="true">·</span>
+  <span id="clock" class="num">–</span>
+</footer>
+
+<script src="/app.js"></script>
+</body>
+</html>

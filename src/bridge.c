@@ -344,6 +344,7 @@ static void ip_note_fail(const char *ip, int max_fails, int block_seconds) {
     pthread_mutex_unlock(&g_blocks_mutex);
     blocklist_append_ip(ip); /* file I/O outside lock */
     webhook_notify("IP_BLOCKED", ip);
+    dashboard_note("blocked %s after repeated gate failures", ip);
     (void)block_seconds;
     return;
   }
@@ -378,6 +379,26 @@ int blocklist_list(char buf[][16], int max) {
     if(g_blocks[i].permanent ||
        (g_blocks[i].blocked_until != 0 && now < g_blocks[i].blocked_until)) {
       snprintf(buf[count], 16, "%s", g_blocks[i].ip);
+      count++;
+    }
+  }
+  pthread_mutex_unlock(&g_blocks_mutex);
+  return count;
+}
+
+/* Richer listing for the web dashboard: kind + expiry per entry. */
+int blocklist_list_ex(block_info_t *out, int max) {
+  int count = 0;
+  pthread_mutex_lock(&g_blocks_mutex);
+  ensure_blocks_init();
+  blocklist_load_if_needed();
+  time_t now = time(NULL);
+  for(int i = 0; i < MAX_BLOCKS && count < max; i++) {
+    if(g_blocks[i].ip[0] == 0) continue;
+    if(g_blocks[i].permanent || (g_blocks[i].blocked_until != 0 && now < g_blocks[i].blocked_until)) {
+      snprintf(out[count].ip, sizeof(out[count].ip), "%s", g_blocks[i].ip);
+      out[count].permanent = g_blocks[i].permanent ? 1 : 0;
+      out[count].until = g_blocks[i].blocked_until;
       count++;
     }
   }
@@ -896,7 +917,7 @@ int accept_connection(modem_config *cfg) {
       LOG(LOG_INFO, "Allowlisted IP %s — skipping gate", cfg->line_data.peer_ip);
       connlog_event(cfg->line_data.peer_ip, CONNLOG_CONNECTED);
       dashboard_stat_gate(1, cfg->line_data.peer_ip);
-      dashboard_set_connected(1, cfg->line_data.peer_ip);
+      dashboard_line_state(cfg->idx, 1, cfg->line_data.peer_ip);
       run_gate_success_script(cfg);
       goto start_ringing;
     }
@@ -954,7 +975,7 @@ int accept_connection(modem_config *cfg) {
     // 3) Gate passed: run optional external hook (non-blocking)
     dashboard_stat_gate(1, cfg->line_data.peer_ip);
     connlog_event(cfg->line_data.peer_ip, CONNLOG_CONNECTED);
-    dashboard_set_connected(1, cfg->line_data.peer_ip);
+    dashboard_line_state(cfg->idx, 1, cfg->line_data.peer_ip);
     run_gate_success_script(cfg);
 
 start_ringing:
@@ -1201,9 +1222,11 @@ void *ctrl_thread(void *arg) {
       if((new_status & DCE_CL_DTR) != (status & DCE_CL_DTR)) {
         if((new_status & DCE_CL_DTR)) {
           LOG(LOG_INFO, "DTR has gone high");
+          dashboard_line_dtr(cfg->idx, 1);
           writePipe(cfg->wp[0][1], MSG_DTR_UP);
         } else {
           LOG(LOG_INFO, "DTR has gone low");
+          dashboard_line_dtr(cfg->idx, 0);
           writePipe(cfg->wp[0][1], MSG_DTR_DOWN);
         }
       }
@@ -1233,6 +1256,7 @@ static int serial_reconnect(dce_config *dce) {
   if(dce->is_ip232) return -1; /* only for real serial ports */
 
   LOG(LOG_WARN, "Serial port %s lost — attempting reconnect", dce->tty);
+  dashboard_note("serial %s lost - waiting for it to return", dce->tty);
 
   dce->is_connected = FALSE;
   if(dce->fd >= 0) { close(dce->fd); dce->fd = -1; }
@@ -1243,6 +1267,7 @@ static int serial_reconnect(dce_config *dce) {
       int rc = dce_connect(dce);
       if(rc >= 0) {
         LOG(LOG_INFO, "Serial port %s reconnected (attempt %d)", dce->tty, attempt);
+        dashboard_note("serial %s reconnected", dce->tty);
         return 0;
       }
     }
@@ -1306,6 +1331,8 @@ void *bridge_task(void *arg) {
   /* Give dashboard access to modem config for interactive commands */
   dashboard_set_serial_fd(cfg->dce_data.fd);
   dashboard_set_modem_cfg((void *)cfg);
+  dashboard_line_init(cfg->idx, cfg->dce_data.is_ip232 ? "(ip232)" : cfg->dce_data.tty,
+                      cfg->dce_data.port_speed, (void *)cfg);
 
   spawn_thread((void *)ctrl_thread, (void *)cfg, "CTRL");
   spawn_thread((void *)ip_thread, (void *)cfg, "IP");
@@ -1477,7 +1504,7 @@ void *bridge_task(void *arg) {
               mdm_set_control_lines(cfg);
               consecutive_no_answer = 0;
             }
-            dashboard_set_connected(0, NULL);
+            dashboard_line_state(cfg->idx, 0, NULL);
             connlog_event(cfg->line_data.peer_ip, CONNLOG_NO_ANSWER);
             line_disconnect(&cfg->line_data);
             continue;
@@ -1502,7 +1529,7 @@ void *bridge_task(void *arg) {
             mdm_set_control_lines(cfg);                 /* restore normal state */
             consecutive_no_answer = 0;
           }
-          dashboard_set_connected(0, NULL);
+          dashboard_line_state(cfg->idx, 0, NULL);
           connlog_event(cfg->line_data.peer_ip, CONNLOG_NO_ANSWER);
         } else
           mdm_send_ring(cfg);

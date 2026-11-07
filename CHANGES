@@ -204,4 +204,18 @@
             noticed left the slot "connected" forever (every later VICE was
             rejected). ip232_thread now wakes bridge_task through the dp pipe
             on attach and the stale fd is cleared on EOF
+  WEB:      dashboard redesigned (audit phase 2A). Page moved out of C string
+            literals into src/web/{index.html,app.js,style.css}, embedded at
+            build time by tools/embed.sh (POSIX sh + od). New /api/status with
+            lines[] (per-line carrier/caller/since/bytes/DCD/DTR), gate config,
+            blocklist with kind + expiry, system events, raw traffic bytes
+            (base64) rendered client-side as PETSCII tokens / ASCII / hex. SSE
+            "status" events every 2 s with retry hint, separate SSE budget.
+            Sign-in: /?token=X sets an HttpOnly SameSite=Strict cookie and
+            redirects to / (token no longer lives in the URL); API accepts
+            cookie or ?token=. POST /api/line/N/hangup and /api/unblock guarded
+            by X-Requested-With. Tight CSP (no inline script), ETag caching for
+            assets, growable JSON writer (no more 8 KB truncation), AA palette,
+            phone layout, TCPSER_DASH_NAME. Stats save/load now take the
+            dashboard lock; per-line state tracked for multi-modem setups.
 

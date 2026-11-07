@@ -181,6 +181,7 @@ typedef struct modem_config {
   int  baud_menu_poke[BAUD_MENU_MAX];    // POKE 838 value that selects that speed
 
   mdm_profile profile;                   // restored by ATZ / AT&F (see mdm_save_profile)
+  int  idx;                              // modem line number (0-based), for dashboards
 } modem_config;
 
 void mdm_init(void);

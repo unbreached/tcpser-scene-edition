@@ -177,6 +177,7 @@ int init(int argc,
 
   LOG_ENTER();
   mdm_init_config(&cfg[0]);
+  cfg[0].idx = 0;
   cfg[0].dce_data.port_speed = 38400;
   cfg[0].line_speed = 38400;
 
@@ -452,6 +453,7 @@ int init(int argc,
           if (++i < max_modem) {
             dce_set = FALSE;
             mdm_init_config(&cfg[i]);
+            cfg[i].idx = i;
             cfg[i].dce_data.port_speed = cfg[i - 1].dce_data.port_speed;
             cfg[i].line_speed = cfg[i - 1].line_speed;
             cfg[i].dce_data.is_ip232 = FALSE;

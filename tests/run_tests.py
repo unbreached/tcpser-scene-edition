@@ -269,15 +269,37 @@ def t_web():
             r = rd(s, 2.0)
             s.close()
             return r
+        def http_raw(req):
+            s = socket.create_connection(("127.0.0.1", wport))
+            s.sendall(req)
+            r = rd(s, 2.0)
+            s.close()
+            return r
         r = http("/api/status")
         assert r.startswith(b"HTTP/1.1 401"), r[:60]
         r = http("/api/status?token=tok123")
-        assert r.startswith(b"HTTP/1.1 200") and b'"stats"' in r, r[:200]
+        assert r.startswith(b"HTTP/1.1 200") and b'"stats"' in r and b'"lines"' in r and b'"blocklist"' in r, r[:300]
         assert b"Access-Control-Allow-Origin" not in r, "CORS wildcard present"
         r = http("/metrics?token=tok123")
-        assert b"tcpser_" in r, r[:200]
+        assert b"tcpser_line_connected" in r, r[:200]
+        # static page is served without auth (no data in it) and sign-in sets a cookie
+        r = http("/")
+        assert r.startswith(b"HTTP/1.1 200") and b"<html" in r.lower() and b"app.js" in r, r[:200]
+        r = http("/app.js")
+        assert r.startswith(b"HTTP/1.1 200") and b"javascript" in r.split(b"\r\n\r\n")[0], r[:200]
         r = http("/?token=tok123")
-        assert b"<html" in r.lower(), r[:200]
+        assert r.startswith(b"HTTP/1.1 302") and b"Set-Cookie: tcpser_dash=tok123" in r and b"HttpOnly" in r, r[:300]
+        r = http("/?token=wrong")
+        assert r.startswith(b"HTTP/1.1 401"), r[:60]
+        r = http_raw(b"GET /api/status HTTP/1.1\r\nHost: x\r\nCookie: a=b; tcpser_dash=tok123\r\n\r\n")
+        assert r.startswith(b"HTTP/1.1 200"), "cookie auth failed: " + repr(r[:80])
+        # actions: POST needs auth + the X-Requested-With header
+        r = http_raw(b"POST /api/unblock HTTP/1.1\r\nHost: x\r\nCookie: tcpser_dash=tok123\r\n\r\n")
+        assert r.startswith(b"HTTP/1.1 403"), r[:60]
+        r = http_raw(b"POST /api/unblock HTTP/1.1\r\nHost: x\r\nCookie: tcpser_dash=tok123\r\nX-Requested-With: tcpser\r\n\r\n")
+        assert r.startswith(b"HTTP/1.1 200") and b'"ok":true' in r, r[:120]
+        r = http_raw(b"POST /api/line/7/hangup HTTP/1.1\r\nHost: x\r\nCookie: tcpser_dash=tok123\r\nX-Requested-With: tcpser\r\n\r\n")
+        assert r.startswith(b"HTTP/1.1 404"), r[:60]
         s = socket.create_connection(("127.0.0.1", wport))
         s.sendall(b"GARBAGE\r\n\r\n")
         r = rd(s, 2.0); s.close()

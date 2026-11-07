@@ -631,6 +631,15 @@ void dashboard_event(int type, unsigned char *data, int len) {
   pthread_mutex_lock(&dash_mutex);
 
   time_t now = time(NULL);
+  {
+    /* attribute session bytes to the connected line (one line connected is the common case) */
+    for(int li = 0; li < DASH_MAX_LINES; li++) {
+      if(g_dash.lines[li].inited && g_dash.lines[li].connected) {
+        if(type == 16) g_dash.lines[li].bytes_in += (unsigned long)len; else g_dash.lines[li].bytes_out += (unsigned long)len;
+        break;
+      }
+    }
+  }
   if(type == 16) {
     g_dash.bytes_in += (unsigned long)len;
     g_dash.session_bytes_in += (unsigned long)len;
@@ -677,21 +686,96 @@ void dashboard_event(int type, unsigned char *data, int len) {
   pthread_mutex_unlock(&dash_mutex);
 }
 
-void dashboard_set_connected(int connected, const char *peer_ip) {
-  if(!g_dash.enabled) return;
+/* ---- per-line state ------------------------------------------------------
+ * The TUI still renders the legacy single-line fields (connected/peer_ip/
+ * session_*); they mirror "the most recently active line". The web dashboard
+ * reads lines[] directly. */
+static void sync_legacy_from_lines(void) {
+  g_dash.connected = 0; g_dash.peer_ip[0] = 0;
+  for(int i = 0; i < DASH_MAX_LINES; i++) {
+    if(g_dash.lines[i].inited && g_dash.lines[i].connected) {
+      g_dash.connected = 1;
+      snprintf(g_dash.peer_ip, sizeof(g_dash.peer_ip), "%s", g_dash.lines[i].peer_ip);
+      g_dash.session_start = g_dash.lines[i].session_start;
+      g_dash.session_bytes_in = g_dash.lines[i].bytes_in;
+      g_dash.session_bytes_out = g_dash.lines[i].bytes_out;
+      break;
+    }
+  }
+}
+
+void dashboard_line_init(int idx, const char *device, int speed, void *cfg) {
+  if(idx < 0 || idx >= DASH_MAX_LINES) return;
   pthread_mutex_lock(&dash_mutex);
-  g_dash.connected = connected;
-  if(peer_ip) snprintf(g_dash.peer_ip, sizeof(g_dash.peer_ip), "%s", peer_ip);
-  else g_dash.peer_ip[0] = '\0';
-  if(connected) { g_dash.session_start = time(NULL); g_dash.session_bytes_in = 0; g_dash.session_bytes_out = 0; }
+  dash_line_t *l = &g_dash.lines[idx];
+  memset(l, 0, sizeof(*l));
+  l->inited = 1;
+  snprintf(l->device, sizeof(l->device), "%s", device ? device : "?");
+  l->speed = speed;
+  l->dtr = 1;
+  l->cfg = cfg;
+  if(!g_dash.modem_cfg) g_dash.modem_cfg = cfg;
+  pthread_mutex_unlock(&dash_mutex);
+}
+
+void dashboard_line_state(int idx, int connected, const char *peer_ip) {
+  if(!g_dash.enabled || idx < 0 || idx >= DASH_MAX_LINES) return;
+  pthread_mutex_lock(&dash_mutex);
+  dash_line_t *l = &g_dash.lines[idx];
+  if(!l->inited) l->inited = 1;
+  l->connected = connected;
+  if(connected) {
+    snprintf(l->peer_ip, sizeof(l->peer_ip), "%s", peer_ip ? peer_ip : "?");
+    l->session_start = time(NULL);
+    l->bytes_in = l->bytes_out = 0;
+  }
+  sync_legacy_from_lines();
   render();
   pthread_mutex_unlock(&dash_mutex);
 }
 
-void dashboard_set_lines(int dcd, int dsr) {
-  if(!g_dash.enabled) return;
+void dashboard_line_dtr(int idx, int dtr) {
+  if(!g_dash.enabled || idx < 0 || idx >= DASH_MAX_LINES) return;
   pthread_mutex_lock(&dash_mutex);
-  g_dash.dcd_on = dcd; g_dash.dsr_on = dsr;
+  g_dash.lines[idx].dtr = dtr;
+  g_dash.dsr_on = dtr;
+  pthread_mutex_unlock(&dash_mutex);
+}
+
+void dashboard_line_closed(int idx) {
+  if(!g_dash.enabled || idx < 0 || idx >= DASH_MAX_LINES) return;
+  pthread_mutex_lock(&dash_mutex);
+  dash_line_t *l = &g_dash.lines[idx];
+  if(l->connected) {
+    dash_history_entry_t *h = &g_dash.history[g_dash.history_head];
+    snprintf(h->ip, sizeof(h->ip), "%s", l->peer_ip[0] ? l->peer_ip : "?");
+    h->connect_time = l->session_start;
+    h->disconnect_time = time(NULL);
+    h->duration = (int)(h->disconnect_time - l->session_start);
+    h->result = 3;
+    h->bytes_in = (int)l->bytes_in;
+    h->bytes_out = (int)l->bytes_out;
+    g_dash.history_head = (g_dash.history_head + 1) % DASH_HISTORY_LINES;
+    if(g_dash.history_count < DASH_HISTORY_LINES) g_dash.history_count++;
+  }
+  l->connected = 0; l->peer_ip[0] = 0;
+  sync_legacy_from_lines();
+  render();
+  pthread_mutex_unlock(&dash_mutex);
+}
+
+void dashboard_note(const char *fmt, ...) {
+  if(!g_dash.enabled) return;
+  char text[80];
+  va_list ap; va_start(ap, fmt);
+  vsnprintf(text, sizeof(text), fmt, ap);
+  va_end(ap);
+  pthread_mutex_lock(&dash_mutex);
+  dash_event_t *e = &g_dash.events[g_dash.events_head];
+  e->when = time(NULL);
+  snprintf(e->text, sizeof(e->text), "%s", text);
+  g_dash.events_head = (g_dash.events_head + 1) % DASH_EVENTS;
+  if(g_dash.events_count < DASH_EVENTS) g_dash.events_count++;
   pthread_mutex_unlock(&dash_mutex);
 }
 
@@ -728,25 +812,6 @@ void dashboard_stat_gate(int passed, const char *ip) {
     g_dash.history_head = (g_dash.history_head + 1) % DASH_HISTORY_LINES;
     if(g_dash.history_count < DASH_HISTORY_LINES) g_dash.history_count++;
   }
-  render();
-  pthread_mutex_unlock(&dash_mutex);
-}
-
-void dashboard_connection_closed(void) {
-  if(!g_dash.enabled) return;
-  pthread_mutex_lock(&dash_mutex);
-  if(g_dash.connected) {
-    dash_history_entry_t *h = &g_dash.history[g_dash.history_head];
-    snprintf(h->ip, sizeof(h->ip), "%s", g_dash.peer_ip[0] ? g_dash.peer_ip : "?");
-    h->connect_time = g_dash.session_start;
-    h->duration = (int)(time(NULL) - g_dash.session_start);
-    h->result = 3;
-    h->bytes_in = (int)g_dash.session_bytes_in;
-    h->bytes_out = (int)g_dash.session_bytes_out;
-    g_dash.history_head = (g_dash.history_head + 1) % DASH_HISTORY_LINES;
-    if(g_dash.history_count < DASH_HISTORY_LINES) g_dash.history_count++;
-  }
-  g_dash.connected = 0; g_dash.peer_ip[0] = '\0';
   render();
   pthread_mutex_unlock(&dash_mutex);
 }
@@ -856,6 +921,7 @@ void dashboard_save_stats(const char *path) {
   if(!path || !path[0]) return;
   f = fopen(path, "w");
   if(!f) return;
+  pthread_mutex_lock(&dash_mutex);
   /* The persisted history includes caller IP addresses (PII), so keep the
    * stats file owner-only regardless of umask. */
   (void)chmod(path, S_IRUSR | S_IWUSR);
@@ -881,6 +947,7 @@ void dashboard_save_stats(const char *path) {
               g_dash.history[idx].bytes_out);
     }
   }
+  pthread_mutex_unlock(&dash_mutex);
   fclose(f);
 }
 
@@ -890,6 +957,7 @@ void dashboard_load_stats(const char *path) {
   if(!path || !path[0]) return;
   f = fopen(path, "r");
   if(!f) return;
+  pthread_mutex_lock(&dash_mutex);
   g_dash.history_head = 0;
   g_dash.history_count = 0;
   while(fgets(line, sizeof(line), f)) {
@@ -919,6 +987,7 @@ void dashboard_load_stats(const char *path) {
       }
     }
   }
+  pthread_mutex_unlock(&dash_mutex);
   fclose(f);
 }
 

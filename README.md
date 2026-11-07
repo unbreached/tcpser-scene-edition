@@ -160,17 +160,22 @@ overlay. Destructive hotkeys ask `y/N`.
 </td>
 <td width="50%" valign="top">
 
-**Web (`-H port`)** — works without `-M`. Live statistics, connection history
-and a live traffic feed, updated over Server-Sent Events.
+**Web (`-H port`)** — works without `-M`. Per-line status (carrier, caller,
+duration, bytes, DCD/DTR), counters, recent callers, a live traffic feed with
+PETSCII / ASCII / hex views, the blocklist and system events, updated every
+2 s over Server-Sent Events. Hang up a caller or clear timed blocks from the
+page. Works on a phone. Name it with `TCPSER_DASH_NAME="My BBS"`.
 
 | Endpoint | Returns |
 |----------|---------|
-| `/` | the dashboard page |
-| `/api/status` | JSON: stats, history, traffic |
-| `/api/events` | SSE stream (updates every 5 s) |
-| `/metrics` | Prometheus text (`tcpser_*`) |
+| `/` | the dashboard page (`/?token=…` once to sign in) |
+| `/api/status` | JSON: lines, gate, stats, history, traffic, blocklist, events |
+| `/api/events` | SSE `status` events every 2 s |
+| `/metrics` | Prometheus text (`tcpser_*`, per-line `tcpser_line_connected`) |
+| `POST /api/line/N/hangup`, `POST /api/unblock` | actions (need `X-Requested-With: tcpser`) |
 
-Binds `127.0.0.1`. See [Security](#security) before exposing it.
+Binds `127.0.0.1`. See [Security](#security) before exposing it. The page lives
+in `src/web/` and is embedded into the binary at build time.
 
 </td>
 </tr>
@@ -178,6 +183,9 @@ Binds `127.0.0.1`. See [Security](#security) before exposing it.
 
 <p align="center">
   <img src="docs/img/terminal-dashboard.png" alt="tcpser terminal dashboard: link status, statistics, hex traffic and connection history" width="900">
+</p>
+<p align="center">
+  <img src="docs/img/web-dashboard-mobile.png" alt="the web dashboard on a phone" width="300">
 </p>
 
 ---
@@ -195,7 +203,7 @@ Everything below runs **before** any byte reaches the serial port.
 | Blocklist | `TCPSER_BLOCKLIST=/var/lib/tcpser/tcpser.blocklist` | one IPv4 per line, `#` comments, atomic append, reloaded on change |
 | Allowlist | `TCPSER_ALLOWLIST=…` | trusted IPs skip gate, rate limit and blocklist |
 | Gate hook | `-E gate_success_log` | a script **name** in `/usr/local/tcpser/scripts/`; runs detached, caller IP in `TCPSER_PEER_IP`; see [`samples/scripts/README.md`](samples/scripts/README.md) |
-| Web dashboard exposure | `TCPSER_DASH_BIND` · `TCPSER_DASH_TOKEN` · `TCPSER_DASH_TRAFFIC` | loopback by default; a token is required to expose it; payload preview is opt-in because it can contain what callers type |
+| Web dashboard exposure | `TCPSER_DASH_BIND` · `TCPSER_DASH_TOKEN` · `TCPSER_DASH_TRAFFIC` | loopback by default; a token is required to expose it; visit `/?token=…` once and the browser keeps an HttpOnly SameSite cookie, so the token never stays in the address bar or proxy logs; payload preview is opt-in because it can contain what callers type |
 | ip232 (`-v`) listener | `TCPSER_IP232_BIND` | the emulator side is the *trusted* modem channel: loopback by default, never expose it unprotected |
 
 ```bash
@@ -203,7 +211,7 @@ Everything below runs **before** any byte reaches the serial port.
 export TCPSER_DASH_BIND=0.0.0.0
 export TCPSER_DASH_TOKEN=$(head -c16 /dev/urandom | xxd -p)
 tcpser -d /dev/ttyUSB0 -s 2400 -p 6400 -x -H 8080
-# → http://host:8080/?token=<value>
+# → open http://host:8080/?token=<value> once; the page then runs on a cookie
 ```
 
 Deployment hardening (unprivileged systemd unit, nginx + TLS, fail2ban jails for the
@@ -393,7 +401,8 @@ Options are validated at startup: a bad value prints a message and exits with co
 | `TCPSER_ALLOWLIST` | allowlist file | `tcpser.allowlist` in the working directory |
 | `TCPSER_DASH_BIND` | web dashboard bind address | `127.0.0.1` |
 | `TCPSER_DASH_TOKEN` | require `?token=…` on the dashboard | none |
-| `TCPSER_DASH_TRAFFIC` | `1` = include payload text in the traffic feed | off |
+| `TCPSER_DASH_TRAFFIC` | `1` = include payload bytes in the traffic feed | off |
+| `TCPSER_DASH_NAME` | BBS name shown in the dashboard header | `TCPSER` |
 | `TCPSER_IP232_BIND` | bind address of the `-v` listener | `127.0.0.1` |
 
 </details>

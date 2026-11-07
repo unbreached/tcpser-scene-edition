@@ -1,6 +1,7 @@
 #ifndef BRIDGE_H
 #define BRIDGE_H
 
+#include <time.h>
 #include "modem_core.h"
 
 #define MSG_CALLING       'C'
@@ -20,6 +21,8 @@ int parse_ip_data(modem_config *cfg, unsigned char *data, int len);
 void *bridge_task(void *arg);
 int blocklist_count(void);
 int blocklist_list(char buf[][16], int max);
+typedef struct { char ip[16]; int permanent; time_t until; } block_info_t;
+int blocklist_list_ex(block_info_t *out, int max);
 int blocklist_unblock_all_timed(void);
 
 #endif

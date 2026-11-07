@@ -429,8 +429,8 @@ int mdm_disconnect(modem_config* cfg, unsigned char force) {
   } else {
     /* Notify dashboard of disconnect (only if actually connected) */
     if(cfg->conn_type != MDM_CONN_NONE) {
-      extern void dashboard_connection_closed(void);
-      dashboard_connection_closed();
+      extern void dashboard_line_closed(int);
+      dashboard_line_closed(cfg->idx);
       /* Log session end with duration */
       if(cfg->conn_established > 0) {
         int dur = (int)(time(NULL) - cfg->conn_established);
