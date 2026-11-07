@@ -1387,9 +1387,15 @@ void *bridge_task(void *arg) {
     FD_ZERO(&readfs);
     max_fd = cfg->mp[1][0];
     FD_SET(cfg->mp[1][0], &readfs);
-    if(cfg->dce_data.is_connected) {
+    if(cfg->dce_data.is_connected && cfg->dce_data.fd >= 0) {
       max_fd = MAX(max_fd, cfg->dce_data.fd);
       FD_SET(cfg->dce_data.fd, &readfs);
+    }
+    if(cfg->dce_data.is_ip232) {
+      /* ip232_thread pokes this pipe when an emulator attaches, so we pick
+       * up the new socket immediately instead of on the next unrelated wake. */
+      max_fd = MAX(max_fd, cfg->dce_data.dp[0][0]);
+      FD_SET(cfg->dce_data.dp[0][0], &readfs);
     }
     max_fd = MAX(max_fd, cfg->wp[0][0]);
     FD_SET(cfg->wp[0][0], &readfs);
@@ -1562,6 +1568,10 @@ void *bridge_task(void *arg) {
           mdm_parse_data(cfg, buf, res);
         }
       }
+    }
+    if (cfg->dce_data.is_ip232 && FD_ISSET(cfg->dce_data.dp[0][0], &readfs)) {
+      readPipe(cfg->dce_data.dp[0][0], buf, sizeof(buf));   /* just a wake-up */
+      LOG(LOG_INFO, "ip232 emulator attached");
     }
     if (FD_ISSET(cfg->wp[0][0], &readfs)) {  // control pipe
       res = readPipe(cfg->wp[0][0], buf, sizeof(buf));

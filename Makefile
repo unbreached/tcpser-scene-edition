@@ -73,6 +73,23 @@ depend:
 
 clean:
 	-rm -f tcpser *.bak $(SRC)/*~ $(SRC)/*.o $(SRC)/*.d $(SRC)/*.bak core
+	-rm -rf build
 
-.PHONY: all install uninstall depend clean
+# ---- tests ---------------------------------------------------------------
+# make check       : drive the normal binary through a full modem session,
+#                    the gates, the web dashboard, CLI validation, pty loss
+# make check-asan  : same against an AddressSanitizer+UBSan build in build/;
+#                    any sanitizer report fails the run
+SAN_CFLAGS = -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -Wall -Wextra -Wno-unused-parameter
+check: tcpser
+	python3 tests/run_tests.py ./tcpser
+
+build/tcpser-asan: $(SRCS) $(wildcard $(SRC)/*.h)
+	mkdir -p build
+	clang $(SAN_CFLAGS) $(DEF) $(SRCS) -o $@ -lpthread
+
+check-asan: build/tcpser-asan
+	ASAN_OPTIONS=halt_on_error=0:detect_leaks=0 python3 tests/run_tests.py build/tcpser-asan
+
+.PHONY: all install uninstall depend clean check check-asan
 

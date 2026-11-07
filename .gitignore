@@ -12,3 +12,4 @@ core
 .vscode/
 .idea/
 src/*.d
+build/

@@ -57,6 +57,12 @@ void *ip232_thread(void *arg) {
             cfg->is_connected = TRUE;
             cfg->ip232_dtr = FALSE;
             cfg->ip232_dcd = FALSE;
+            /* Wake bridge_task so it adds the new fd to its select set NOW.
+             * It used to rely on ctrl_thread noticing the link change within
+             * its 100 ms poll; a client that connected and dropped inside
+             * that window left is_connected stuck TRUE and every later
+             * emulator was rejected with "already have ip232 connection". */
+            writePipe(cfg->dp[0][1], 'A');
           }
         }
       }
@@ -218,8 +224,9 @@ int ip232_read(dce_config *cfg, unsigned char *data, int len) {
   if (cfg->is_connected) {
     res = recv(cfg->fd, buf, len, 0);
     if (0 >= res) {
-      LOG(LOG_INFO, "No ip232 socket data read, assume closed peer");
+      LOG(LOG_INFO, "ip232 client disconnected; waiting for a new emulator connection");
       ip_disconnect(cfg->fd);
+      cfg->fd = -1;              /* never select()/read a stale descriptor */
       cfg->is_connected = FALSE;
     } else {
       LOG(LOG_DEBUG, "Read %d bytes from ip232 socket", res);

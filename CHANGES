@@ -196,4 +196,12 @@
             $55 pattern, four PETSCII-framed pages (MONITOR, LOG, WIRE, HELP)
             on F1/F3/F5/F7, Makefile targets to run and screenshot it in VICE
             against a live tcpser (make run-live / make shot-live)
+  TEST:     tests/run_tests.py + make check / make check-asan: full ip232 modem
+            session, BACKSPACE and password gates incl. -F blocking, web auth/
+            status/metrics/400, CLI validation exit codes, AT parser saturation,
+            pty serial-loss + backpressure; sanitizer reports fail the run
+  STABILITY: ip232 - an emulator that connected and dropped before bridge_task
+            noticed left the slot "connected" forever (every later VICE was
+            rejected). ip232_thread now wakes bridge_task through the dp pipe
+            on attach and the stale fd is cleared on EOF
 
