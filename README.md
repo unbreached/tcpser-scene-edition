@@ -270,8 +270,9 @@ tcpser -d /dev/ttyUSB0 -s 2400 -Z
 Flow control and parity are not probed; the `&K` suggestion is a heuristic to verify.
 
 <p align="center">
-  <img src="c64/shot.png" alt="TCPSER LINK ANALYZER running on the C64" width="384"><br>
-  <sub><a href="c64/">c64/tcpser-link.prg</a>: the C64-side companion shows the 6551 status and command registers live and toggles DTR/RTS so you can see what tcpser sees.</sub>
+  <img src="c64/shot.png" alt="TCPSER LINK ANALYZER on the C64: live 6551 registers and cable lines" width="384">
+  <img src="c64/shot-log.png" alt="TCPSER LINK ANALYZER log page: hex dump and text of what tcpser sent" width="384"><br>
+  <sub><a href="c64/">c64/tcpser-link.prg</a>: the C64-side companion. Live 6551 registers decoded to cable DCD/DSR/DTR/RTS, send <code>AT</code> and read tcpser's <code>OK</code> on the C64, toggle DTR/RTS to map the wiring, and a log page with everything tcpser sent. Four pages (F1–F7), runs on hardware or in VICE against a live tcpser over ip232.</sub>
 </p>
 
 ---

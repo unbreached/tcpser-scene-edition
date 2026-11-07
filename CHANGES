@@ -185,4 +185,15 @@
   DOCS:     analyzer documented as implemented (no 90-combination sweep); man page
             -p/-E/-d/-v/DCD corrections; -E example is a name, not a path;
             stale 1.2.0 strings; samples/scripts/README.md hook interface
+  C64:      TCPSER LINK ANALYZER v0.2 (c64/): rewritten after the audit. Fixes:
+            DCD/DSR were decoded with inverted polarity AND from the wrong bits
+            (SwiftLink-class carts swap the 6551 DCD/DSR pins; verified in VICE
+            against tcpser over ip232), the detection probe reprogrammed the chip
+            to 19200 baud (now saved/restored), the RTS toggle could select
+            "transmit BREAK", quit hung forever (now returns to BASIC). New:
+            probes $DE00 and $DF00, ACIA init 8N1 with a baud selector, 256-byte
+            receive log (hex + text), TX/RX/framing counters, send AT / send
+            $55 pattern, four PETSCII-framed pages (MONITOR, LOG, WIRE, HELP)
+            on F1/F3/F5/F7, Makefile targets to run and screenshot it in VICE
+            against a live tcpser (make run-live / make shot-live)
 
