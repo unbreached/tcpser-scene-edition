@@ -88,6 +88,16 @@ typedef struct {
   int events_head;
   int events_count;
 
+  /* Activity time series for the web charts. Buckets are indexed by wall-clock
+   * position (hour of day, minute of hour) and carry the stamp of the period
+   * they belong to, so stale buckets read as zero without a sweeper. */
+  unsigned hour_calls[24];      /* accepted connections per hour */
+  unsigned hour_fail[24];       /* gate failures + drops per hour */
+  long     hour_stamp[24];      /* time/3600 of the period the bucket holds */
+  unsigned long min_in[60];     /* bytes caller->BBS per minute */
+  unsigned long min_out[60];    /* bytes BBS->caller per minute */
+  long     min_stamp[60];       /* time/60 of the period the bucket holds */
+
   int enabled;
 } dashboard_state_t;
 

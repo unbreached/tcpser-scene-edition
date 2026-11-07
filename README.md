@@ -160,11 +160,15 @@ overlay. Destructive hotkeys ask `y/N`.
 </td>
 <td width="50%" valign="top">
 
-**Web (`-H port`)** — works without `-M`. Per-line status (carrier, caller,
-duration, bytes, DCD/DTR), counters, recent callers, a live traffic feed with
-PETSCII / ASCII / hex views, the blocklist and system events, updated every
-2 s over Server-Sent Events. Hang up a caller or clear timed blocks from the
-page. Works on a phone. Name it with `TCPSER_DASH_NAME="My BBS"`.
+**Web (`-H port`)** — works without `-M`. A 5250-style terminal console: a
+fixed-column line list (carrier, caller, duration, bytes, DCD/DTR), activity
+charts drawn in block characters (calls and gate failures per hour for 24 h,
+bytes in and out per minute for 60 min), totals, recent callers, a live
+traffic feed with PETSCII / ASCII / hex views, the blocklist and system
+events, updated every 2 s over Server-Sent Events. Function keys work on the
+keyboard: F5 refresh, F7 phosphor (green / amber / white), F8 hang up, F9
+clear timed blocks, with Y/N confirmation on the message line. Name it with
+`TCPSER_DASH_NAME="My BBS"`.
 
 | Endpoint | Returns |
 |----------|---------|

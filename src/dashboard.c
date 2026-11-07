@@ -94,6 +94,9 @@ static void term_size(int *w, int *h) {
 
 static int g_quit_requested = 0;
 static char g_confirm = 0;     /* pending destructive hotkey awaiting y/N */
+static void series_call(void);
+static void series_fail(void);
+static void series_bytes(int in, int len);
 static time_t g_confirm_at = 0;
 #define CONFIRM_TIMEOUT 10     /* seconds before a pending y/N prompt auto-cancels */
 void term_restore(void);
@@ -640,6 +643,7 @@ void dashboard_event(int type, unsigned char *data, int len) {
       }
     }
   }
+  series_bytes(type == 16, len);
   if(type == 16) {
     g_dash.bytes_in += (unsigned long)len;
     g_dash.session_bytes_in += (unsigned long)len;
@@ -684,6 +688,26 @@ void dashboard_event(int type, unsigned char *data, int len) {
 
   render_traffic_only();
   pthread_mutex_unlock(&dash_mutex);
+}
+
+
+/* ---- activity series (call with dash_mutex held) ---------------------- */
+static void series_hour_touch(time_t now) {
+  long period = (long)(now / 3600);
+  int h = (int)(period % 24);
+  if(g_dash.hour_stamp[h] != period) { g_dash.hour_stamp[h] = period; g_dash.hour_calls[h] = 0; g_dash.hour_fail[h] = 0; }
+}
+static void series_min_touch(time_t now) {
+  long period = (long)(now / 60);
+  int m = (int)(period % 60);
+  if(g_dash.min_stamp[m] != period) { g_dash.min_stamp[m] = period; g_dash.min_in[m] = 0; g_dash.min_out[m] = 0; }
+}
+static void series_call(void)  { time_t now = time(NULL); series_hour_touch(now); g_dash.hour_calls[(now / 3600) % 24]++; }
+static void series_fail(void)  { time_t now = time(NULL); series_hour_touch(now); g_dash.hour_fail[(now / 3600) % 24]++; }
+static void series_bytes(int in, int len) {
+  time_t now = time(NULL); series_min_touch(now);
+  int m = (int)((now / 60) % 60);
+  if(in) g_dash.min_in[m] += (unsigned long)len; else g_dash.min_out[m] += (unsigned long)len;
 }
 
 /* ---- per-line state ------------------------------------------------------
@@ -783,6 +807,7 @@ void dashboard_stat_connection(const char *ip) {
   if(!g_dash.enabled) return;
   pthread_mutex_lock(&dash_mutex);
   g_dash.total_connections++;
+  series_call();
   render();
   pthread_mutex_unlock(&dash_mutex);
   (void)ip;
@@ -792,6 +817,7 @@ void dashboard_stat_blocked(const char *ip) {
   if(!g_dash.enabled) return;
   pthread_mutex_lock(&dash_mutex);
   g_dash.blocked++;
+  series_fail();
   dash_history_entry_t *h = &g_dash.history[g_dash.history_head];
   snprintf(h->ip, sizeof(h->ip), "%s", ip ? ip : "?");
   h->connect_time = time(NULL); h->duration = 0; h->result = 0; h->bytes_in = 0; h->bytes_out = 0;
@@ -804,7 +830,7 @@ void dashboard_stat_blocked(const char *ip) {
 void dashboard_stat_gate(int passed, const char *ip) {
   if(!g_dash.enabled) return;
   pthread_mutex_lock(&dash_mutex);
-  if(passed) g_dash.gate_pass++; else g_dash.gate_fail++;
+  if(passed) g_dash.gate_pass++; else { g_dash.gate_fail++; series_fail(); }
   if(!passed) {
     dash_history_entry_t *h = &g_dash.history[g_dash.history_head];
     snprintf(h->ip, sizeof(h->ip), "%s", ip ? ip : "?");

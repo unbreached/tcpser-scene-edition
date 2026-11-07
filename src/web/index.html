@@ -4,97 +4,120 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="dark">
-<title>tcpser dashboard</title>
+<title>tcpser console</title>
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
-<header class="top">
-  <div class="brand">
-    <span class="shade" aria-hidden="true">▓▒░</span>
-    <h1 id="bbs-name">TCPSER</h1>
-    <span class="shade" aria-hidden="true">░▒▓</span>
-  </div>
-  <div class="live" id="live" role="status" aria-live="polite">
-    <span class="dot" id="live-dot" aria-hidden="true"></span>
-    <span id="live-text">connecting…</span>
-    <span class="sep" aria-hidden="true">·</span>
-    <span>up <span id="uptime" class="num">–</span></span>
-    <span class="sep" aria-hidden="true">·</span>
-    <span>tcpser <span id="version">–</span></span>
-  </div>
+<div class="crt" id="crt">
+<!-- 5250-style system line: system · title · date/time -->
+<header class="sysline">
+  <span class="sys" id="sysname">TCPSER</span>
+  <span class="ttl" id="bbs-name">TCPSER CONSOLE</span>
+  <span class="clk num" id="clock">--/--/-- --:--:--</span>
 </header>
+<div class="rule" aria-hidden="true"></div>
 
-<section class="lines" id="lines" aria-label="Modem lines"></section>
-
-<section class="counters" aria-label="Counters">
-  <div class="chip"><span class="k">calls</span><span class="v num" id="c-conn">–</span></div>
-  <div class="chip"><span class="k">gate pass</span><span class="v num ok" id="c-pass">–</span></div>
-  <div class="chip"><span class="k">gate fail</span><span class="v num warn" id="c-fail">–</span></div>
-  <div class="chip"><span class="k">dropped</span><span class="v num danger" id="c-drop" title="blocklist + rate limit">–</span></div>
-  <div class="chip"><span class="k">in</span><span class="v num" id="c-in">–</span></div>
-  <div class="chip"><span class="k">out</span><span class="v num" id="c-out">–</span></div>
+<!-- LINES: a fixed-column record list, the way a 5250 subfile looks -->
+<section class="scr" aria-labelledby="t-lines">
+  <h2 class="scrt" id="t-lines"><span class="hi">LINES</span></h2>
+  <div class="cols"><pre class="rec hdr" aria-hidden="true">LN DEVICE            SPEED STATE    CALLER           DUR      IN     OUT  DCD DTR</pre>
+  <div id="lines"></div></div>
 </section>
 
-<div class="grid">
-  <section class="panel" aria-labelledby="h-callers">
-    <h2 id="h-callers">Recent callers</h2>
-    <div class="scroll-x">
-    <table class="tbl" id="callers">
-      <thead><tr><th>Time</th><th>Caller</th><th>Result</th><th class="r">Dur</th><th class="r">↓</th><th class="r">↑</th></tr></thead>
-      <tbody></tbody>
-    </table>
+<!-- ACTIVITY: block-glyph charts aligned to the character grid -->
+<section class="scr" aria-labelledby="t-act">
+  <h2 class="scrt" id="t-act"><span class="hi">ACTIVITY</span> <span class="dim" id="act-sub"></span></h2>
+  <div class="charts">
+    <div class="chart">
+      <div class="chl"><span class="lbl">CALLS 24H</span> <span class="dim num" id="calls-sum"></span></div>
+      <pre class="bars" id="ch-calls" aria-label="calls per hour, last 24 hours"></pre>
+      <pre class="axis" id="ax-hours" aria-hidden="true"></pre>
+      <div class="chl"><span class="lbl">GATE FAIL + DROPS</span> <span class="dim num" id="fail-sum"></span></div>
+      <pre class="bars bad" id="ch-fail" aria-label="gate failures and drops per hour"></pre>
     </div>
-    <p class="empty" id="callers-empty">No calls yet.</p>
+    <div class="chart">
+      <div class="chl"><span class="lbl">TRAFFIC 60 MIN</span> <span class="dim num" id="traf-sum"></span></div>
+      <pre class="bars" id="ch-in" aria-label="bytes from callers per minute"></pre>
+      <pre class="bars out" id="ch-out" aria-label="bytes to callers per minute"></pre>
+      <pre class="axis" id="ax-min" aria-hidden="true"></pre>
+      <div class="legend"><span class="sw in">▮</span> CALLER→BBS <span class="sw outsw">▮</span> BBS→CALLER</div>
+    </div>
+  </div>
+</section>
+
+<div class="two">
+  <!-- TOTALS as a label/value column -->
+  <section class="scr" aria-labelledby="t-tot">
+    <h2 class="scrt" id="t-tot"><span class="hi">TOTALS</span></h2>
+    <dl class="kv">
+      <dt>CALLS</dt><dd class="num" id="c-conn">-</dd>
+      <dt>GATE PASS</dt><dd class="num ok" id="c-pass">-</dd>
+      <dt>GATE FAIL</dt><dd class="num warn" id="c-fail">-</dd>
+      <dt>DROPPED</dt><dd class="num bad" id="c-drop" title="blocklist + rate limit">-</dd>
+      <dt>BYTES IN</dt><dd class="num" id="c-in">-</dd>
+      <dt>BYTES OUT</dt><dd class="num" id="c-out">-</dd>
+      <dt>UPTIME</dt><dd class="num" id="uptime">-</dd>
+      <dt>GATE</dt><dd id="gate">-</dd>
+      <dt>LISTEN</dt><dd class="num" id="listen">-</dd>
+      <dt>LINK</dt><dd id="live-text">connecting</dd>
+    </dl>
   </section>
 
-  <section class="panel" aria-labelledby="h-traffic">
-    <div class="panel-head">
-      <h2 id="h-traffic">Live traffic</h2>
-      <div class="controls" role="group" aria-label="Traffic view">
-        <button class="seg on" data-mode="petscii" type="button">PETSCII</button>
-        <button class="seg" data-mode="ascii" type="button">ASCII</button>
-        <button class="seg" data-mode="hex" type="button">HEX</button>
-        <button class="seg pause" id="pause" type="button" aria-pressed="false">⏸ pause</button>
-      </div>
-    </div>
-    <p class="note" id="traffic-note" hidden>Payload content is hidden. Start tcpser with <code>TCPSER_DASH_TRAFFIC=1</code> (localhost + token only) to show what callers and the BBS send.</p>
-    <ol class="feed" id="feed" aria-live="off"></ol>
-    <p class="empty" id="feed-empty">No traffic yet.</p>
+  <!-- RECENT CALLERS subfile -->
+  <section class="scr" aria-labelledby="t-call">
+    <h2 class="scrt" id="t-call"><span class="hi">RECENT CALLERS</span></h2>
+    <div class="cols"><pre class="rec hdr" aria-hidden="true">TIME     CALLER           RESULT        DUR     IN      OUT</pre>
+    <div id="callers"></div>
+    <p class="empty" id="callers-empty">NO CALLS YET</p></div>
   </section>
 </div>
 
-<div class="grid">
-  <section class="panel" aria-labelledby="h-block">
-    <div class="panel-head">
-      <h2 id="h-block">Blocklist <span class="count num" id="block-count"></span></h2>
-      <button class="btn" id="unblock" type="button">Clear timed blocks</button>
-    </div>
+<!-- LIVE TRAFFIC -->
+<section class="scr" aria-labelledby="t-traf">
+  <h2 class="scrt" id="t-traf"><span class="hi">LIVE TRAFFIC</span>
+    <span class="opts" role="group" aria-label="traffic view">
+      <button class="opt on" data-mode="petscii" type="button">PETSCII</button>
+      <button class="opt" data-mode="ascii" type="button">ASCII</button>
+      <button class="opt" data-mode="hex" type="button">HEX</button>
+      <button class="opt" id="pause" type="button" aria-pressed="false">HOLD</button>
+    </span>
+  </h2>
+  <p class="note" id="traffic-note" hidden>CONTENT HIDDEN. START TCPSER WITH TCPSER_DASH_TRAFFIC=1 (LOCALHOST + TOKEN ONLY) TO SHOW PAYLOADS.</p>
+  <ol class="feed" id="feed"></ol>
+  <p class="empty" id="feed-empty">NO TRAFFIC YET</p>
+</section>
+
+<div class="two">
+  <section class="scr" aria-labelledby="t-blk">
+    <h2 class="scrt" id="t-blk"><span class="hi">BLOCKLIST</span> <span class="dim num" id="block-count"></span></h2>
     <ul class="list" id="blocklist"></ul>
-    <p class="empty" id="block-empty">Nothing blocked.</p>
+    <p class="empty" id="block-empty">NOTHING BLOCKED</p>
   </section>
-
-  <section class="panel" aria-labelledby="h-events">
-    <h2 id="h-events">Events</h2>
+  <section class="scr" aria-labelledby="t-evt">
+    <h2 class="scrt" id="t-evt"><span class="hi">EVENTS</span></h2>
     <ul class="list" id="events"></ul>
-    <p class="empty" id="events-empty">Nothing yet.</p>
+    <p class="empty" id="events-empty">NOTHING YET</p>
   </section>
 </div>
 
-<section class="panel locked" id="locked" hidden>
-  <h2>Dashboard locked</h2>
-  <p>This dashboard requires a token. Open <code>http://&lt;host&gt;:&lt;port&gt;/?token=YOUR_TOKEN</code> once; the page then keeps you signed in with a cookie.</p>
+<section class="scr locked" id="locked" hidden>
+  <h2 class="scrt"><span class="hi">SIGN-ON REQUIRED</span></h2>
+  <p>THIS CONSOLE IS TOKEN PROTECTED. OPEN <code>http://&lt;host&gt;:&lt;port&gt;/?token=YOUR_TOKEN</code> ONCE. THE BROWSER THEN KEEPS A SESSION COOKIE.</p>
 </section>
 
-<footer class="foot">
-  <span id="gate">gate –</span>
-  <span class="sep" aria-hidden="true">·</span>
-  <span>listen <span class="num" id="listen">–</span></span>
-  <span class="sep" aria-hidden="true">·</span>
-  <a href="/metrics" id="metrics-link">/metrics</a>
-  <span class="sep" aria-hidden="true">·</span>
-  <span id="clock" class="num">–</span>
+<!-- message line + function keys, bottom of the 5250 screen -->
+<div class="rule" aria-hidden="true"></div>
+<div class="msgline" id="msg" role="status" aria-live="polite"></div>
+<footer class="fkeys" id="fkeys">
+  <button type="button" data-f="F3">F3=Exit</button>
+  <button type="button" data-f="F5">F5=Refresh</button>
+  <button type="button" data-f="F7">F7=Phosphor</button>
+  <button type="button" data-f="F8">F8=Hang up</button>
+  <button type="button" data-f="F9">F9=Unblock</button>
+  <button type="button" data-f="F10">F10=Metrics</button>
+  <span class="ver dim">tcpser <span id="version">-</span></span>
 </footer>
-
+</div>
 <script src="/app.js"></script>
 </body>
 </html>

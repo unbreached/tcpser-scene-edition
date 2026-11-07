@@ -217,6 +217,20 @@ static void build_status_json(jbuf_t *b) {
   }
   jb_raw(b, "],");
 
+  /* activity series: oldest -> newest, ending at the current bucket */
+  {
+    long hp = (long)(now / 3600), mp = (long)(now / 60);
+    jb_raw(b, "\"series\":{\"hour_calls\":[");
+    for(int i = 23; i >= 0; i--) { long p = hp - i; int h = (int)(p % 24); jb_printf(b, "%s%u", i == 23 ? "" : ",", g_dash.hour_stamp[h] == p ? g_dash.hour_calls[h] : 0u); }
+    jb_raw(b, "],\"hour_fail\":[");
+    for(int i = 23; i >= 0; i--) { long p = hp - i; int h = (int)(p % 24); jb_printf(b, "%s%u", i == 23 ? "" : ",", g_dash.hour_stamp[h] == p ? g_dash.hour_fail[h] : 0u); }
+    jb_raw(b, "],\"min_in\":[");
+    for(int i = 59; i >= 0; i--) { long p = mp - i; int m = (int)(p % 60); jb_printf(b, "%s%lu", i == 59 ? "" : ",", g_dash.min_stamp[m] == p ? g_dash.min_in[m] : 0ul); }
+    jb_raw(b, "],\"min_out\":[");
+    for(int i = 59; i >= 0; i--) { long p = mp - i; int m = (int)(p % 60); jb_printf(b, "%s%lu", i == 59 ? "" : ",", g_dash.min_stamp[m] == p ? g_dash.min_out[m] : 0ul); }
+    jb_printf(b, "],\"hour_now\":%d,\"min_now\":%d},", (int)(hp % 24), (int)(mp % 60));
+  }
+
   /* events, newest first */
   jb_raw(b, "\"events\":[");
   for(int i = 0; i < g_dash.events_count && i < DASH_EVENTS; i++) {

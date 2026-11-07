@@ -217,5 +217,10 @@
             by X-Requested-With. Tight CSP (no inline script), ETag caching for
             assets, growable JSON writer (no more 8 KB truncation), AA palette,
             phone layout, TCPSER_DASH_NAME. Stats save/load now take the
-            dashboard lock; per-line state tracked for multi-modem setups.
+            dashboard lock; per-line state tracked for multi-modem setups.  WEB:      console restyled as a 5250 / AS/400 terminal screen (system line,
+            reverse-video panel titles, fixed-column subfiles, dotted-leader
+            totals, F-key row with keyboard shortcuts and Y/N prompts on the
+            message line, green/amber/white phosphor). New activity series in
+            the dashboard state (calls + gate fails per hour, bytes in/out per
+            minute) exposed in /api/status and drawn as block-glyph charts.
 
