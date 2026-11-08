@@ -30,12 +30,6 @@ static volatile sig_atomic_t g_sighup = 0;
 static volatile sig_atomic_t g_sigusr1 = 0;
 static time_t g_start_time = 0;
 
-/* Connection statistics */
-static volatile unsigned long g_stat_connections = 0;
-static volatile unsigned long g_stat_blocked = 0;
-static volatile unsigned long g_stat_gate_pass = 0;
-static volatile unsigned long g_stat_gate_fail = 0;
-
 static void handle_shutdown(int sig) {
   (void)sig;
   g_running = 0;
@@ -57,16 +51,20 @@ static void dump_stats(int modem_count) {
   long days = uptime / 86400;
   long hours = (uptime % 86400) / 3600;
   long mins = (uptime % 3600) / 60;
+  /* the counters live in the dashboard state (the old file-local copies here
+   * were never incremented, so SIGUSR1 always reported zeros) */
+  unsigned long conns = 0, blocked = 0, pass = 0, fail = 0;
+  dashboard_counters(&conns, &blocked, &pass, &fail);
 
   fprintf(stderr, "\n");
   fprintf(stderr, "  TCPSER %s - Statistics\n", VERSION);
   fprintf(stderr, "  ================================\n");
   fprintf(stderr, "  Uptime:       %ldd %ldh %ldm\n", days, hours, mins);
   fprintf(stderr, "  Modems:       %d configured\n", modem_count);
-  fprintf(stderr, "  Connections:  %lu total\n", g_stat_connections);
-  fprintf(stderr, "  Blocked:      %lu (IP blocklist)\n", g_stat_blocked);
-  fprintf(stderr, "  Gate passed:  %lu\n", g_stat_gate_pass);
-  fprintf(stderr, "  Gate failed:  %lu\n", g_stat_gate_fail);
+  fprintf(stderr, "  Connections:  %lu total\n", conns);
+  fprintf(stderr, "  Blocked:      %lu (IP blocklist / rate limit)\n", blocked);
+  fprintf(stderr, "  Gate passed:  %lu\n", pass);
+  fprintf(stderr, "  Gate failed:  %lu\n", fail);
   fprintf(stderr, "  ================================\n\n");
 }
 
@@ -84,6 +82,7 @@ int main(int argc, char *argv[]) {
   fd_set readfs;
   int max_fd = 0;
   int accept_pending = FALSE;
+  time_t accept_pending_since = 0;
   unsigned char buf[255];
   int cSocket;
 
@@ -204,6 +203,12 @@ int main(int argc, char *argv[]) {
       rc = select(max_fd+1, &readfs, NULL, NULL, &tv);
       /* Always check keyboard, resize and signals, even during active traffic */
       if(g_sighup) { g_sighup = 0; log_reopen(); LOG(LOG_INFO, "Log file reopened (SIGHUP)"); }
+      /* A modem that never answers MSG_CALLING (e.g. stuck in a serial
+       * reconnect loop) must not freeze every port forever (audit STAB-M8). */
+      if(accept_pending && time(NULL) - accept_pending_since > 5) {
+        LOG(LOG_WARN, "Routed call was not accepted within 5 s; releasing the accept gate");
+        accept_pending = FALSE;
+      }
       if(g_sigusr1) { g_sigusr1 = 0; dump_stats(modem_count); }
       dashboard_check_winch();    /* repaint on terminal resize (was only on idle ticks) */
       dashboard_check_keyboard(); /* process interactive keys */
@@ -233,12 +238,13 @@ int main(int argc, char *argv[]) {
           for(int m = 0; m < ports[port_idx].modem_count; m++) {
             i = ports[port_idx].modem_list[m];
             if(cfg[i].s[0] != 0 && cfg[i].is_off_hook == FALSE
-               && cfg[i].line_data.is_connected == FALSE) {
+               && cfg[i].line_data.is_connected == FALSE
+               && (cfg[i].dce_data.is_ip232 || cfg[i].dce_data.is_connected)) {
               // send signal to pipe saying pick up...
               LOG(LOG_DEBUG, "Routing %s to listening modem #%d", ports[port_idx].name, i);
               cfg[i].line_data.sfd = ports[port_idx].socket;
               writePipe(cfg[i].mp[1][1], MSG_CALLING);
-              accept_pending = TRUE;
+              accept_pending = TRUE; accept_pending_since = time(NULL);
               break;
             }
           }
@@ -247,12 +253,13 @@ int main(int argc, char *argv[]) {
             for(int m = 0; m < ports[port_idx].modem_count; m++) {
               i = ports[port_idx].modem_list[m];
               if(cfg[i].is_off_hook == FALSE
-                 && cfg[i].line_data.is_connected == FALSE) {
+                 && cfg[i].line_data.is_connected == FALSE
+                 && (cfg[i].dce_data.is_ip232 || cfg[i].dce_data.is_connected)) {
                 // send signal to pipe saying pick up...
                 LOG(LOG_DEBUG, "Routing %s to available modem #%d", ports[port_idx].name, i);
                 cfg[i].line_data.sfd = ports[port_idx].socket;
                 writePipe(cfg[i].mp[1][1], MSG_CALLING);
-                accept_pending = TRUE;
+                accept_pending = TRUE; accept_pending_since = time(NULL);
                 break;
               }
             }

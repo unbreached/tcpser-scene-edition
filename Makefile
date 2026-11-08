@@ -107,5 +107,14 @@ build/tcpser-asan: $(SRCS) $(wildcard $(SRC)/*.h)
 check-asan: build/tcpser-asan
 	ASAN_OPTIONS=halt_on_error=0:detect_leaks=0 python3 tests/run_tests.py build/tcpser-asan
 
-.PHONY: all install uninstall depend clean check check-asan docs check-docs
+# make check-tsan : same suite under ThreadSanitizer; any data race fails the run
+TSAN_CFLAGS = -O1 -g -fsanitize=thread -fno-omit-frame-pointer -Wall -Wextra -Wno-unused-parameter
+build/tcpser-tsan: $(SRCS) $(wildcard $(SRC)/*.h)
+	mkdir -p build
+	clang $(TSAN_CFLAGS) $(DEF) $(SRCS) -o $@ -lpthread
+
+check-tsan: build/tcpser-tsan
+	TSAN_OPTIONS=report_signal_unsafe=0:halt_on_error=0:second_deadlock_stack=1 python3 tests/run_tests.py build/tcpser-tsan
+
+.PHONY: all install uninstall depend clean check check-asan check-tsan docs check-docs
 

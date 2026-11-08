@@ -1,3 +1,4 @@
+#include <sys/socket.h>
 #include "debug.h"
 #include "modem_core.h"
 #include "phone_book.h"
@@ -102,8 +103,17 @@ int line_connect(line_config *cfg, char *number) {
 
 int line_disconnect(line_config *cfg) {
   LOG(LOG_INFO, "Disconnecting line");
-  if(cfg->is_connected == TRUE) {
-    ip_disconnect(cfg->fd);
+  /* Order matters (audit STAB-M4): clear the shared state FIRST so ip_thread
+   * stops treating the descriptor as ours, then shutdown() to wake a reader
+   * blocked on it, then close. Closing first left a window where the number
+   * was reused by the next accept() while ip_thread still read from it. */
+  int fd = cfg->fd;
+  int was = cfg->is_connected;
+  cfg->is_connected = FALSE;
+  cfg->fd = -1;
+  if(was == TRUE && fd >= 0) {
+    shutdown(fd, SHUT_RDWR);
+    ip_disconnect(fd);
   }
   reset_config(cfg);
   return 0;

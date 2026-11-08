@@ -30,17 +30,21 @@ enum {
   PARITY_MARK
 };
 
+#include <stdatomic.h>
+/* Fields written by one thread and read by another (ip232_thread / ctrl_thread
+ * / bridge_task / main) are _Atomic: plain int gave ThreadSanitizer-confirmed
+ * data races (audit STAB-M3). Plain assignment and reads are seq_cst. */
 typedef struct dce_config {
   int port_speed;
   int parity;
   int is_ip232;
   char tty[256];
-  int fd;
+  _Atomic int fd;
   int dp[2][2];
   int sSocket;
-  int is_connected;
-  int ip232_dtr;
-  int ip232_dcd;
+  _Atomic int is_connected;
+  _Atomic int ip232_dtr;
+  _Atomic int ip232_dcd;
   int ip232_iac;
   int flow_control;   /* last MDM_FC_* opts applied (so ATZ/&F can restore them) */
 } dce_config;

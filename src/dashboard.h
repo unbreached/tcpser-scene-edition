@@ -122,6 +122,8 @@ void dashboard_stat_connection(const char *ip);
 void dashboard_stat_blocked(const char *ip);
 void dashboard_stat_gate(int passed, const char *ip);
 void dashboard_connection_closed(void);
+/* locked snapshot of the lifetime counters (SIGUSR1 dump) */
+void dashboard_counters(unsigned long *connections, unsigned long *blocked, unsigned long *gate_pass, unsigned long *gate_fail);
 void dashboard_render(void);
 int  dashboard_check_winch(void);
 void dashboard_check_keyboard(void);

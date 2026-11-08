@@ -106,10 +106,10 @@ typedef struct modem_config {
   dce_config dce_data;
   line_config line_data;
   int line_speed;
-  int conn_type;
+  _Atomic int conn_type;      /* read by ip_thread and main without the bridge thread's knowledge */
   time_t conn_established;  /* time connection was established (for DTR grace) */
   int is_ringing;
-  int is_off_hook;
+  _Atomic int is_off_hook;    /* main thread routes calls on it */
   int dsr_active;
   int force_dsr;
   int force_dcd;
@@ -122,7 +122,7 @@ typedef struct modem_config {
   int pre_break_delay;
   unsigned char first_ch;
   int is_cmd_started;
-  int is_cmd_mode;
+  _Atomic int is_cmd_mode;    /* ip_thread gates socket reads on it */
   char cur_line[1024];
   int cur_line_idx;
   int last_line_idx;
@@ -138,7 +138,7 @@ typedef struct modem_config {
   int send_responses;
   int text_responses;
   int is_echo;
-  int s[100];
+  _Atomic int s[100];         /* s[0] (auto-answer) is read by the main thread's router */
   int break_len;
   int disconnect_delay;
   char crlf[3];

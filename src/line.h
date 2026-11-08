@@ -8,10 +8,11 @@
 #define INET_ADDRSTRLEN 16
 #endif
 
+#include <stdatomic.h>
 typedef struct line_config {
-  int fd;
+  _Atomic int fd;            /* read by ip_thread, written by bridge_task */
   int sfd;
-  int is_connected;
+  _Atomic int is_connected;
   int is_telnet;
   int is_data_received;
   nvt_vars nvt_data;

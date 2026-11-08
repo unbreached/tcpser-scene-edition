@@ -25,6 +25,7 @@
 #include <unistd.h>
 #include <errno.h>
 #include <pthread.h>
+#include <stdatomic.h>
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <netinet/in.h>
@@ -52,7 +53,7 @@
 static int g_web_port = 0;
 static int g_web_socket = -1;
 static pthread_t g_web_thread;
-static volatile int g_web_running = 0;
+static _Atomic int g_web_running = 0;   /* set by main, read by the accept thread */
 static char g_web_bind[64] = "127.0.0.1";
 static char g_web_token[128] = {0};
 static char g_web_name[64] = "TCPSER";

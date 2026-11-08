@@ -222,13 +222,13 @@ void mdm_save_profile(modem_config *cfg) {
   p->invert_dsr = cfg->invert_dsr;
   p->invert_dcd = cfg->invert_dcd;
   p->flow_control = cfg->dce_data.flow_control;
-  memcpy(p->s, cfg->s, sizeof(p->s));
+  for(int i = 0; i < (int)(sizeof(p->s) / sizeof(p->s[0])); i++) p->s[i] = cfg->s[i];
   p->valid = TRUE;
   LOG(LOG_DEBUG, "Operator profile saved (invert_dcd=%d force_dcd=%d force_dsr=%d flow=%d dtr_mode=%d)",
       p->invert_dcd, p->force_dcd, p->force_dsr, p->flow_control, p->dtr_mode);
 }
 
-static void mdm_factory_s_regs(int *s) {
+static void mdm_factory_s_regs(_Atomic int *s) {
   for(int r = 0; r < 100; r++) s[r] = 0;
   s[S_REG_BREAK] = 43;
   s[S_REG_CR] = 13;
@@ -259,7 +259,7 @@ void mdm_reset_profile(modem_config *cfg) {
     cfg->force_dcd = p->force_dcd;
     cfg->invert_dsr = p->invert_dsr;
     cfg->invert_dcd = p->invert_dcd;
-    memcpy(cfg->s, p->s, sizeof(cfg->s));
+    for(int i = 0; i < (int)(sizeof(p->s) / sizeof(p->s[0])); i++) cfg->s[i] = p->s[i];
     dce_set_flow_control(&cfg->dce_data, p->flow_control);
   } else {
     cfg->send_responses = TRUE;

@@ -424,6 +424,15 @@ void dashboard_init(const char *tty, int speed, int port, int modem_count) {
 
 /* Expose the dashboard mutex so other readers of g_dash (e.g. the web
  * dashboard threads) can take a consistent snapshot. */
+void dashboard_counters(unsigned long *connections, unsigned long *blocked, unsigned long *gate_pass, unsigned long *gate_fail) {
+  pthread_mutex_lock(&dash_mutex);
+  if(connections) *connections = g_dash.total_connections;
+  if(blocked) *blocked = g_dash.blocked;
+  if(gate_pass) *gate_pass = g_dash.gate_pass;
+  if(gate_fail) *gate_fail = g_dash.gate_fail;
+  pthread_mutex_unlock(&dash_mutex);
+}
+
 void dashboard_lock(void) { pthread_mutex_lock(&dash_mutex); }
 void dashboard_unlock(void) { pthread_mutex_unlock(&dash_mutex); }
 
@@ -627,20 +636,20 @@ void dashboard_note(const char *fmt, ...) {
   pthread_mutex_unlock(&dash_mutex);
 }
 
+/* The lifetime counters count whether or not a dashboard is enabled: the
+ * SIGUSR1 dump and -Y stats read them. Only the drawing is conditional. */
 void dashboard_stat_connection(const char *ip) {
-  if(!g_dash.enabled) return;
   pthread_mutex_lock(&dash_mutex);
   g_dash.total_connections++;
-  series_call();
-  render();
+  if(g_dash.enabled) { series_call(); render(); }
   pthread_mutex_unlock(&dash_mutex);
   (void)ip;
 }
 
 void dashboard_stat_blocked(const char *ip) {
-  if(!g_dash.enabled) return;
   pthread_mutex_lock(&dash_mutex);
   g_dash.blocked++;
+  if(!g_dash.enabled) { pthread_mutex_unlock(&dash_mutex); return; }
   series_fail();
   dash_history_entry_t *h = &g_dash.history[g_dash.history_head];
   snprintf(h->ip, sizeof(h->ip), "%s", ip ? ip : "?");
@@ -652,10 +661,11 @@ void dashboard_stat_blocked(const char *ip) {
 }
 
 void dashboard_stat_gate(int passed, const char *ip) {
-  if(!g_dash.enabled) return;
   pthread_mutex_lock(&dash_mutex);
-  if(passed) g_dash.gate_pass++; else { g_dash.gate_fail++; series_fail(); }
+  if(passed) g_dash.gate_pass++; else g_dash.gate_fail++;
+  if(!g_dash.enabled) { pthread_mutex_unlock(&dash_mutex); return; }
   if(!passed) {
+    series_fail();
     dash_history_entry_t *h = &g_dash.history[g_dash.history_head];
     snprintf(h->ip, sizeof(h->ip), "%s", ip ? ip : "?");
     h->connect_time = time(NULL); h->duration = 0; h->result = 1; h->bytes_in = 0; h->bytes_out = 0;

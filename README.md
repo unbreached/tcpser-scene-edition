@@ -107,7 +107,7 @@ for proper PETSCII), press BACKSPACE twice, and your BBS should answer.
 
 **Test** with `make check` (drives a full modem session, the gates, the web dashboard,
 CLI validation and a pty port-loss scenario against the built binary) or
-`make check-asan` (same suite against an AddressSanitizer/UBSan build; needs clang).
+`make check-asan` and `make check-tsan` (same suite against AddressSanitizer/UBSan and ThreadSanitizer builds; need clang).
 
 **Install system-wide** with `sudo make install` (binary to `/usr/local/bin`, man page,
 PETSCII screens and service files to `/usr/local/share/tcpser/`; override with

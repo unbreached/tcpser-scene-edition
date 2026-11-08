@@ -395,6 +395,48 @@ gate-timeout = 30
         srv.stop()
 
 
+@test("webhook (-e): GATE_FAIL is POSTed as JSON by the spawned curl; SIGUSR1 dumps real counters")
+def t_webhook():
+    import http.server, threading, shutil, signal as _signal
+    if not shutil.which("curl"):
+        print("        (curl not installed, webhook delivery not exercised)")
+    hits = []
+    class H(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            n = int(self.headers.get("Content-Length", "0"))
+            hits.append((self.path, self.headers.get("Content-Type", ""), self.rfile.read(n)))
+            self.send_response(204); self.end_headers()
+        def log_message(self, *a): pass
+    httpd = http.server.HTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    url = f"http://127.0.0.1:{httpd.server_address[1]}/hook"
+    srv = Server("-k", "secret", "-F", "5", "-W", "5", "-e", url)
+    try:
+        v = srv.vice()
+        c = srv.caller()
+        rd(c, 0.5)
+        c.sendall(b"wrong\r")
+        rd(c, 1.0)
+        c.close()
+        end = time.time() + 6
+        while time.time() < end and not hits:
+            time.sleep(0.1)
+        if shutil.which("curl"):
+            assert hits, "no webhook POST received within 6 s"
+            path, ctype, body = hits[0]
+            assert path == "/hook" and "application/json" in ctype, (path, ctype)
+            assert b"GATE_FAIL" in body and b"127.0.0.1" in body, body[:200]
+        # SIGUSR1: the stats dump must reflect the gate failure, not zeros
+        srv.p.send_signal(_signal.SIGUSR1)
+        time.sleep(0.8)
+        err = srv.stderr()
+        assert b"Gate failed:  1" in err, err[-600:]
+        v.close()
+    finally:
+        srv.stop()
+        httpd.shutdown()
+
+
 @test("AT parser: huge S-register number saturates, no crash; S value clamps to 255")
 def t_at_overflow():
     srv = Server()

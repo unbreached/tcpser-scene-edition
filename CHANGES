@@ -179,6 +179,24 @@
             src/options.c drives getopt, -h, and the option tables in README
             and the man page (`make docs`; `make check` fails if they drift).
             Help now goes entirely to stdout (half of it went to stderr).
+  STABILITY: thread-safety pass (audit phase 2E, STAB-M3..M8). The modem
+             fields read across threads (line fd/is_connected, ip232 fd/
+             is_connected/DTR/DCD, conn_type, is_cmd_mode, is_off_hook, the
+             S registers the router reads) are C11 _Atomic; line_disconnect
+             publishes "gone" before shutdown()+close so a reused descriptor
+             can no longer be read as the caller's; the BBS watchdog gives up
+             after DTR x3 + BREAK (was: a healthy silent BBS got pulsed
+             forever) and says so on both dashboards; the main router skips
+             serial lines whose port is lost and releases the accept gate
+             after 5 s if a modem never answers, so one stuck line cannot
+             freeze every port; webhooks start curl with posix_spawn instead
+             of fork() in a multithreaded process (absolute curl path, fixed
+             PATH, URL still via stdin); web server stop flag atomic.
+             `make check-tsan` runs the suite under ThreadSanitizer: clean.
+  STABILITY: SIGUSR1 statistics dump always printed zeros (its counters were
+             never incremented); it now reads the dashboard counters, which
+             count even without -M/-H. The "gate failed" log line (fail2ban
+             key) lost the caller IP in some paths; fixed.
   DEPLOY:   systemd units and the installer use /etc/tcpser/tcpser.conf
             (template data/tcpser.conf) with `tcpser check` as ExecStartPre,
             so a typo fails fast with a message in the journal instead of a

@@ -961,13 +961,15 @@ int accept_connection(modem_config *cfg) {
 
     // 2) Optional bot gate (still BEFORE serial/modem traffic)
     if(preconnect_gate(cfg) == FALSE) {
-      dashboard_stat_gate(0, cfg->line_data.peer_ip);
-      connlog_event(cfg->line_data.peer_ip, CONNLOG_GATE_FAIL);
-      webhook_notify("GATE_FAIL", cfg->line_data.peer_ip);
-      ip_note_fail(cfg->line_data.peer_ip, cfg->gate_max_fails, 600);
+      /* copy the IP first: line_disconnect() clears peer_ip, and the fail2ban
+       * filter (samples/fail2ban) keys on this log line */
+      char peer[INET_ADDRSTRLEN]; snprintf(peer, sizeof(peer), "%s", cfg->line_data.peer_ip);
+      dashboard_stat_gate(0, peer);
+      connlog_event(peer, CONNLOG_GATE_FAIL);
+      webhook_notify("GATE_FAIL", peer);
+      ip_note_fail(peer, cfg->gate_max_fails, 600);
       line_disconnect(&cfg->line_data);
-      LOG(LOG_INFO, "Pre-connect gate failed for %s; disconnected before touching serial",
-          cfg->line_data.peer_ip);
+      LOG(LOG_INFO, "Pre-connect gate failed for %s; disconnected before touching serial", peer);
       LOG_EXIT();
       return 0;
     }
@@ -1549,10 +1551,18 @@ void *bridge_task(void *arg) {
         usleep(500000);
         mdm_set_control_lines(cfg);  /* restore normal lines */
         if(watchdog_dtr_attempts >= 3) {
-          /* After 3 attempts, send a break signal as last resort */
-          LOG(LOG_WARN, "BBS watchdog: 3 DTR toggles failed, sending BREAK");
+          /* After 3 attempts, send a break signal as last resort, then STOP:
+           * a BBS that is healthy but silent (no caller, no prompt) used to
+           * get a DTR pulse every -w seconds and a BREAK every third time,
+           * forever (audit STAB-M5). The watchdog re-arms on the next
+           * disconnect; the operator sees the give-up on both dashboards. */
+          LOG(LOG_ERROR, "BBS watchdog: 3 DTR toggles failed, sending BREAK and giving up until the next call");
           tcsendbreak(cfg->dce_data.fd, 0);
+          dashboard_note("line %d: BBS silent for %lds after disconnect; DTR x3 + BREAK sent, watchdog off",
+                         cfg->idx, (long)(cfg->watchdog_timeout * 3));
           watchdog_dtr_attempts = 0;
+          watchdog_start = 0;
+          continue;
         }
         watchdog_start = time(NULL);  /* reset for next attempt */
       }
