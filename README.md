@@ -165,10 +165,11 @@ fixed-column line list (carrier, caller, duration, bytes, DCD/DTR), activity
 charts drawn in block characters (calls and gate failures per hour for 24 h,
 bytes in and out per minute for 60 min), totals, recent callers, a live
 traffic feed with PETSCII / ASCII / hex views, the blocklist and system
-events, updated every 2 s over Server-Sent Events. Function keys work on the
-keyboard: F5 refresh, F7 phosphor (green / amber / white), F8 hang up, F9
-clear timed blocks, with Y/N confirmation on the message line. Name it with
-`TCPSER_DASH_NAME="My BBS"`.
+events, updated every 2 s over Server-Sent Events. Four screens, like a
+terminal menu: F2 Status, F3 Callers, F4 Traffic, F6 Security (keys 1–4 work
+too). Function keys: F5 refresh, F7 phosphor (green / amber / white), F8 hang
+up, F9 clear timed blocks, F12 exit, with Y/N confirmation on the message
+line. Name it with `TCPSER_DASH_NAME="My BBS"`.
 
 | Endpoint | Returns |
 |----------|---------|
@@ -189,7 +190,10 @@ in `src/web/` and is embedded into the binary at build time.
   <img src="docs/img/terminal-dashboard.png" alt="tcpser terminal dashboard: link status, statistics, hex traffic and connection history" width="900">
 </p>
 <p align="center">
-  <img src="docs/img/web-dashboard-mobile.png" alt="the web dashboard on a phone" width="300">
+  <img src="docs/img/web-traffic.png" alt="web console, Traffic screen: live PETSCII traffic feed" width="900">
+</p>
+<p align="center">
+  <img src="docs/img/web-dashboard-mobile.png" alt="the web console on a phone" width="300">
 </p>
 
 ---

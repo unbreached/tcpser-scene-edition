@@ -219,7 +219,9 @@ def t_pw_gate():
     srv = Server("-k", "secret", "-F", "2", "-W", "5", "-I")
     try:
         v = srv.vice()
-        # two failed connections (one wrong guess each -> gate fails after guesses/timeout)
+        # two failed connections; tcpser also rate-limits one IP to one attempt per
+        # 5 s, so space them out or the second one is dropped BEFORE the gate and
+        # does not count as a gate failure.
         for _ in range(2):
             c = srv.caller()
             rd(c, 0.5)
@@ -231,8 +233,9 @@ def t_pw_gate():
                 time.sleep(0.15)
             rd(c, 1.0)
             c.close()
-            time.sleep(0.3)
+            time.sleep(5.5)
         assert b"RING" not in rd(v, 0.5), "RING without a correct password"
+        assert b"Pre-connect gate failed" in srv.logtext(), "gate failures were not registered"
         # third connection: should be blocked (closed without a prompt)
         c = srv.caller()
         r = rd(c, 1.5)
@@ -243,6 +246,7 @@ def t_pw_gate():
     finally:
         srv.stop()
     # fresh server: correct password passes
+    time.sleep(0.5)
     srv = Server("-k", "secret", "-I")
     try:
         v = srv.vice()

@@ -3,6 +3,7 @@
  *   GET  /api/events            SSE "status" events (same JSON)
  *   POST /api/line/<n>/hangup   hang up the caller on line n   (X-Requested-With: tcpser)
  *   POST /api/unblock           clear timed blocks
+ * Screens: F2 status, F3 callers, F4 traffic, F6 security (also keys 1-4).
  * Everything caller-derived is rendered with textContent, never innerHTML. */
 (function () {
   "use strict";
@@ -13,17 +14,29 @@
     return h ? `${h}:${String(m).padStart(2, "0")}:${String(x).padStart(2, "0")}` : `${String(m).padStart(2, "0")}:${String(x).padStart(2, "0")}`; };
   const fmtUp = (s) => { const d = (s / 86400) | 0, h = ((s % 86400) / 3600) | 0, m = ((s % 3600) / 60) | 0; return (d ? d + "D " : "") + String(h).padStart(2, "0") + ":" + String(m).padStart(2, "0"); };
   const timeOf = (iso) => { const d = new Date(iso); return isNaN(d) ? "--:--:--" : d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }); };
+  const dateOf = (iso) => { const d = new Date(iso); return isNaN(d) ? "" : d.toLocaleDateString(); };
   const BLOCKS = " ▁▂▃▄▅▆▇█";
+  const PAGES = ["status", "callers", "traffic", "security"];
+  const PAGE_KEYS = { F2: "status", F3: "callers", F4: "traffic", F6: "security", "1": "status", "2": "callers", "3": "traffic", "4": "security" };
 
-  let mode = "petscii", paused = false, lastData = null, frozen = null, pendingAsk = null, es = null;
+  let mode = "petscii", paused = false, lastData = null, frozen = null, pendingAsk = null, es = null, page = "status";
 
-  // ---- phosphor (per-browser preference) ---------------------------------
+  // ---- per-browser preferences (phosphor, screen) -------------------------
   const PHOS = ["green", "amber", "white"];
-  function setPhosphor(p, save) {
-    document.documentElement.setAttribute("data-phosphor", p);
-    if (save) { try { localStorage.setItem("tcpser.phosphor", p); } catch (e) { /* private window etc. */ } }
+  function pref(k, v) { try { if (v === undefined) return localStorage.getItem("tcpser." + k); localStorage.setItem("tcpser." + k, v); } catch (e) { return null; } return null; }
+  function setPhosphor(p, save) { document.documentElement.setAttribute("data-phosphor", p); if (save) pref("phosphor", p); }
+  { const p = pref("phosphor"); if (PHOS.includes(p)) setPhosphor(p, false); }
+
+  // ---- screens -----------------------------------------------------------
+  function showPage(p, save) {
+    if (!PAGES.includes(p)) return;
+    page = p;
+    document.querySelectorAll(".page").forEach((el) => { el.hidden = el.dataset.page !== p; });
+    document.querySelectorAll("#tabs button").forEach((b) => b.classList.toggle("on", b.dataset.page === p));
+    if (save) pref("page", p);
+    if (lastData) render(lastData);
   }
-  try { const p = localStorage.getItem("tcpser.phosphor"); if (PHOS.includes(p)) setPhosphor(p, false); } catch (e) { /* ignore */ }
+  document.querySelectorAll("#tabs button").forEach((b) => { b.onclick = () => { showPage(b.dataset.page, true); msg(""); }; });
 
   // ---- message line ------------------------------------------------------
   function msg(text, cls) { const m = $("msg"); m.textContent = text || ""; m.className = "msgline" + (cls ? " " + cls : ""); }
@@ -79,13 +92,15 @@
     const sumC = calls.reduce((a, b) => a + b, 0), sumF = fails.reduce((a, b) => a + b, 0), peak = Math.max(0, ...calls);
     $("calls-sum").textContent = `${sumC} TOTAL · PEAK ${peak}/H`;
     $("fail-sum").textContent = `${sumF} TOTAL`;
-    const mIn = s.min_in, mOut = s.min_out;
-    bars($("ch-in"), mIn, { label: (i) => (59 - i) + " min ago", fmt: fmtBytes });
-    bars($("ch-out"), mOut, { label: (i) => (59 - i) + " min ago", fmt: fmtBytes });
-    $("ax-min").textContent = "-60m      -50       -40       -30       -20       -10       now";
-    const tIn = mIn.reduce((a, b) => a + b, 0), tOut = mOut.reduce((a, b) => a + b, 0);
-    $("traf-sum").textContent = `↓${fmtBytes(tIn)} ↑${fmtBytes(tOut)} / 60 MIN`;
-    $("act-sub").textContent = "AS OF " + timeOf(d.now) + " " + new Date(d.now).toLocaleDateString();
+    // narrow screens get the last 30 minutes so the chart stays on the grid
+    const narrow = window.innerWidth < 700, win = narrow ? 30 : 60;
+    const mIn = s.min_in.slice(-win), mOut = s.min_out.slice(-win);
+    bars($("ch-in"), mIn, { label: (i) => (win - 1 - i) + " min ago", fmt: fmtBytes });
+    bars($("ch-out"), mOut, { label: (i) => (win - 1 - i) + " min ago", fmt: fmtBytes });
+    $("ax-min").textContent = narrow ? "-30m      -20       -10       now" : "-60m      -50       -40       -30       -20       -10       now";
+    const tIn = s.min_in.reduce((a, b) => a + b, 0), tOut = s.min_out.reduce((a, b) => a + b, 0);
+    $("traf-sum").textContent = `${win} MIN  ↓${fmtBytes(tIn)} ↑${fmtBytes(tOut)}`;
+    $("act-sub").textContent = "AS OF " + timeOf(d.now) + " " + dateOf(d.now);
   }
 
   // ---- records ------------------------------------------------------------
@@ -113,7 +128,7 @@
     const host = $("callers"); host.textContent = ""; $("callers-empty").hidden = hist.length > 0;
     hist.forEach((h) => {
       const pre = document.createElement("pre"); pre.className = "rec";
-      pre.append(pad(timeOf(h.time), 8) + " " + pad(h.ip, 16) + " ");
+      pre.append(pad(timeOf(h.time), 8) + " " + pad(dateOf(h.time), 10) + " " + pad(h.ip, 16) + " ");
       pre.append(span("res-" + h.result, pad(h.result.replace("_", " "), 13)));
       pre.append(" " + pad(h.duration ? fmtDur(h.duration) : "", 5, true) + " " + pad(h.bytes_in ? fmtBytes(h.bytes_in) : "", 6, true) + " " + pad(h.bytes_out ? fmtBytes(h.bytes_out) : "", 7, true));
       host.appendChild(pre);
@@ -135,10 +150,13 @@
     const ul = $("blocklist"); ul.textContent = ""; $("block-empty").hidden = bl.length > 0; $("block-count").textContent = bl.length ? String(bl.length) : "";
     $("fkeys").querySelector('[data-f="F9"]').disabled = !bl.some((b) => b.kind === "timed");
     bl.forEach((b) => { const li = document.createElement("li"); li.append(span("ip", b.ip), span("kind " + b.kind, b.kind === "permanent" ? "PERMANENT" : "TIMED, UNTIL " + timeOf(b.expires))); ul.appendChild(li); });
+    $("c-blocked").textContent = bl.length;
   }
   function renderEvents(ev) {
-    const ul = $("events"); ul.textContent = ""; $("events-empty").hidden = ev.length > 0;
-    ev.forEach((e) => { const li = document.createElement("li"); li.append(span("time num", timeOf(e.time)), span("", e.text.toUpperCase())); ul.appendChild(li); });
+    [["events", "events-empty", ev], ["events-short", "events-short-empty", ev.slice(0, 5)]].forEach(([id, emptyId, list]) => {
+      const ul = $(id); ul.textContent = ""; $(emptyId).hidden = list.length > 0;
+      list.forEach((e) => { const li = document.createElement("li"); li.append(span("time num", timeOf(e.time)), span("", e.text.toUpperCase())); ul.appendChild(li); });
+    });
   }
   function render(d) {
     lastData = d;
@@ -146,10 +164,15 @@
     $("version").textContent = d.version; $("uptime").textContent = fmtUp(d.uptime_s);
     $("c-conn").textContent = d.stats.total_connections; $("c-pass").textContent = d.stats.gate_pass; $("c-fail").textContent = d.stats.gate_fail;
     $("c-drop").textContent = d.stats.dropped; $("c-in").textContent = fmtBytes(d.stats.bytes_in); $("c-out").textContent = fmtBytes(d.stats.bytes_out);
-    $("gate").textContent = d.gate.mode.toUpperCase() + (d.gate.mode !== "off" ? ` ${d.gate.timeout}S / BLOCK AFTER ${d.gate.fails}` : "");
+    const gateText = d.gate.mode.toUpperCase() + (d.gate.mode !== "off" ? ` ${d.gate.timeout}S / BLOCK AFTER ${d.gate.fails}` : "");
+    $("gate").textContent = gateText; $("g-mode").textContent = d.gate.mode.toUpperCase(); $("g-timeout").textContent = d.gate.mode !== "off" ? d.gate.timeout + " S" : "-"; $("g-fails").textContent = d.gate.mode !== "off" ? d.gate.fails + " FAILURES" : "-";
     $("listen").textContent = ":" + d.listen_port;
-    $("clock").textContent = new Date(d.now).toLocaleDateString() + " " + timeOf(d.now);
-    renderLines(d.lines); renderCharts(d); renderCallers(d.history); renderTraffic(d); renderBlocklist(d.blocklist); renderEvents(d.events);
+    $("clock").textContent = dateOf(d.now) + " " + timeOf(d.now);
+    // render only what is on screen (plus the cheap bits), the rest on page switch
+    if (page === "status") { renderLines(d.lines); renderCharts(d); }
+    if (page === "callers") renderCallers(d.history);
+    if (page === "traffic") renderTraffic(d);
+    renderBlocklist(d.blocklist); renderEvents(d.events);
     $("fkeys").querySelector('[data-f="F8"]').disabled = !d.lines.some((l) => l.state === "connected");
   }
 
@@ -160,7 +183,8 @@
     if (window.__TCPSER_SNAPSHOT__) { if (lastData) render(lastData); return; }
     try { const r = await fetch("/api/status"); if (r.status === 401) { locked(true); return; } if (r.ok) { render(await r.json()); locked(false); } } catch (e) { /* down */ }
   }
-  if (window.__TCPSER_SNAPSHOT__) { render(window.__TCPSER_SNAPSHOT__); setLink("SNAPSHOT", "warn"); msg("STATIC SNAPSHOT. ACTIONS ARE INERT."); }
+  { const p = pref("page"); showPage(PAGES.includes(p) ? p : "status", false); }
+  if (window.__TCPSER_SNAPSHOT__) { render(window.__TCPSER_SNAPSHOT__); setLink("SNAPSHOT", "warn"); msg("STATIC SNAPSHOT. ACTIONS ARE INERT. F2/F3/F4/F6 OR 1-4 SWITCH SCREENS."); }
   else {
     const connect = () => {
       if (es) es.close();
@@ -182,18 +206,21 @@
 
   // ---- function keys -----------------------------------------------------
   function fkey(k) {
-    if (k === "F3") { ask("EXIT THE CONSOLE?", () => { document.getElementById("crt").textContent = ""; document.body.style.background = "#000"; }); return; }
+    if (PAGE_KEYS[k]) { showPage(PAGE_KEYS[k], true); msg(""); return; }
     if (k === "F5") { msg("REFRESHED"); refresh(); return; }
     if (k === "F7") { const cur = document.documentElement.getAttribute("data-phosphor") || "green"; const next = PHOS[(PHOS.indexOf(cur) + 1) % PHOS.length]; setPhosphor(next, true); msg("PHOSPHOR: " + next.toUpperCase()); return; }
     if (k === "F8") { const l = lastData && lastData.lines.find((x) => x.state === "connected"); if (!l) { msg("NO CALLER ONLINE", "err"); return; } ask(`HANG UP LINE ${l.id} (${l.peer})?`, () => act(`/api/line/${l.id}/hangup`, `LINE ${l.id} HUNG UP`)); return; }
     if (k === "F9") { if (!lastData || !lastData.blocklist.some((b) => b.kind === "timed")) { msg("NO TIMED BLOCKS", "err"); return; } ask("CLEAR ALL TIMED BLOCKS?", () => act("/api/unblock", "TIMED BLOCKS CLEARED")); return; }
-    if (k === "F10") { if (!window.__TCPSER_SNAPSHOT__) location.href = "/metrics"; else msg("SNAPSHOT: NO METRICS ENDPOINT", "err"); }
+    if (k === "F10") { if (!window.__TCPSER_SNAPSHOT__) location.href = "/metrics"; else msg("SNAPSHOT: NO METRICS ENDPOINT", "err"); return; }
+    if (k === "F12") { ask("EXIT THE CONSOLE?", () => { $("crt").textContent = ""; document.body.style.background = "#000"; }); }
   }
   document.querySelectorAll(".fkeys button").forEach((b) => { b.onclick = () => fkey(b.dataset.f); const t = b.textContent.split("="); b.textContent = ""; const k = document.createElement("b"); k.textContent = t[0] + "="; b.append(k, t[1] || ""); });
   document.addEventListener("keydown", (e) => {
+    if (e.target && /^(INPUT|TEXTAREA)$/.test(e.target.tagName)) return;
     if (pendingAsk !== null) { if (e.key === "y" || e.key === "Y") { e.preventDefault(); answer(true); } else if (e.key === "n" || e.key === "N" || e.key === "Escape") { e.preventDefault(); answer(false); } return; }
-    if (/^F(3|5|7|8|9|10)$/.test(e.key)) { e.preventDefault(); fkey(e.key); }
+    if (PAGE_KEYS[e.key] || /^F(5|7|8|9|10|12)$/.test(e.key)) { e.preventDefault(); fkey(e.key); }
   });
   document.querySelectorAll(".opt[data-mode]").forEach((b) => b.onclick = () => { mode = b.dataset.mode; document.querySelectorAll(".opt[data-mode]").forEach((x) => x.classList.toggle("on", x === b)); if (lastData) renderTraffic(lastData); });
   $("pause").onclick = () => { paused = !paused; frozen = paused && lastData ? lastData.traffic : null; $("pause").setAttribute("aria-pressed", String(paused)); $("pause").textContent = paused ? "RELEASE" : "HOLD"; msg(paused ? "TRAFFIC FEED ON HOLD" : ""); if (lastData) renderTraffic(lastData); };
+  window.addEventListener("resize", () => { if (lastData && page === "status") renderCharts(lastData); });
 })();

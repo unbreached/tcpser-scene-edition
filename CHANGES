@@ -222,5 +222,9 @@
             totals, F-key row with keyboard shortcuts and Y/N prompts on the
             message line, green/amber/white phosphor). New activity series in
             the dashboard state (calls + gate fails per hour, bytes in/out per
-            minute) exposed in /api/status and drawn as block-glyph charts.
+            minute) exposed in /api/status and drawn as block-glyph charts.  WEB:      screens: F2 Status, F3 Callers, F4 Traffic, F6 Security (keys 1-4
+            too), remembered per browser; F12 exits. Narrow screens show the
+            last 30 minutes of traffic so the chart stays on the grid.
+  TEST:     password-gate test spaces attempts beyond the 5 s per-IP rate limit
+            (it was flaky); make check now fails the build on a failing suite.
 

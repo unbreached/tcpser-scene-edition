@@ -90,7 +90,7 @@ clean:
 #                    any sanitizer report fails the run
 SAN_CFLAGS = -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -Wall -Wextra -Wno-unused-parameter
 check: tcpser
-	python3 tests/run_tests.py ./tcpser
+	@python3 tests/run_tests.py ./tcpser || { echo "make check: FAILED"; exit 1; }
 
 build/tcpser-asan: $(SRCS) $(wildcard $(SRC)/*.h)
 	mkdir -p build

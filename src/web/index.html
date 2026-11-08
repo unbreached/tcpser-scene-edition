@@ -15,16 +15,24 @@
   <span class="ttl" id="bbs-name">TCPSER CONSOLE</span>
   <span class="clk num" id="clock">--/--/-- --:--:--</span>
 </header>
+<!-- screens, selected with function keys (or 1-4) like a terminal menu -->
+<nav class="tabs" id="tabs" aria-label="Screens">
+  <button type="button" data-page="status" data-key="F2"><b>F2</b>=Status</button>
+  <button type="button" data-page="callers" data-key="F3"><b>F3</b>=Callers</button>
+  <button type="button" data-page="traffic" data-key="F4"><b>F4</b>=Traffic</button>
+  <button type="button" data-page="security" data-key="F6"><b>F6</b>=Security</button>
+  <span class="link dim">LINK <span id="live-text">connecting</span></span>
+</nav>
 <div class="rule" aria-hidden="true"></div>
 
-<!-- LINES: a fixed-column record list, the way a 5250 subfile looks -->
+<!-- ===================== F2 STATUS ===================== -->
+<div class="page" data-page="status">
 <section class="scr" aria-labelledby="t-lines">
   <h2 class="scrt" id="t-lines"><span class="hi">LINES</span></h2>
   <div class="cols"><pre class="rec hdr" aria-hidden="true">LN DEVICE            SPEED STATE    CALLER           DUR      IN     OUT  DCD DTR</pre>
   <div id="lines"></div></div>
 </section>
 
-<!-- ACTIVITY: block-glyph charts aligned to the character grid -->
 <section class="scr" aria-labelledby="t-act">
   <h2 class="scrt" id="t-act"><span class="hi">ACTIVITY</span> <span class="dim" id="act-sub"></span></h2>
   <div class="charts">
@@ -36,7 +44,7 @@
       <pre class="bars bad" id="ch-fail" aria-label="gate failures and drops per hour"></pre>
     </div>
     <div class="chart">
-      <div class="chl"><span class="lbl">TRAFFIC 60 MIN</span> <span class="dim num" id="traf-sum"></span></div>
+      <div class="chl"><span class="lbl">TRAFFIC</span> <span class="dim num" id="traf-sum"></span></div>
       <pre class="bars" id="ch-in" aria-label="bytes from callers per minute"></pre>
       <pre class="bars out" id="ch-out" aria-label="bytes to callers per minute"></pre>
       <pre class="axis" id="ax-min" aria-hidden="true"></pre>
@@ -46,7 +54,6 @@
 </section>
 
 <div class="two">
-  <!-- TOTALS as a label/value column -->
   <section class="scr" aria-labelledby="t-tot">
     <h2 class="scrt" id="t-tot"><span class="hi">TOTALS</span></h2>
     <dl class="kv">
@@ -59,21 +66,30 @@
       <dt>UPTIME</dt><dd class="num" id="uptime">-</dd>
       <dt>GATE</dt><dd id="gate">-</dd>
       <dt>LISTEN</dt><dd class="num" id="listen">-</dd>
-      <dt>LINK</dt><dd id="live-text">connecting</dd>
+      <dt>BLOCKED</dt><dd class="num" id="c-blocked">-</dd>
     </dl>
   </section>
-
-  <!-- RECENT CALLERS subfile -->
-  <section class="scr" aria-labelledby="t-call">
-    <h2 class="scrt" id="t-call"><span class="hi">RECENT CALLERS</span></h2>
-    <div class="cols"><pre class="rec hdr" aria-hidden="true">TIME     CALLER           RESULT        DUR     IN      OUT</pre>
-    <div id="callers"></div>
-    <p class="empty" id="callers-empty">NO CALLS YET</p></div>
+  <section class="scr" aria-labelledby="t-evt0">
+    <h2 class="scrt" id="t-evt0"><span class="hi">LATEST EVENTS</span></h2>
+    <ul class="list" id="events-short"></ul>
+    <p class="empty" id="events-short-empty">NOTHING YET</p>
   </section>
 </div>
+</div>
 
-<!-- LIVE TRAFFIC -->
-<section class="scr" aria-labelledby="t-traf">
+<!-- ===================== F3 CALLERS ===================== -->
+<div class="page" data-page="callers" hidden>
+<section class="scr tall" aria-labelledby="t-call">
+  <h2 class="scrt" id="t-call"><span class="hi">RECENT CALLERS</span> <span class="dim">NEWEST FIRST</span></h2>
+  <div class="cols"><pre class="rec hdr" aria-hidden="true">TIME     DATE       CALLER           RESULT        DUR     IN      OUT</pre>
+  <div id="callers"></div>
+  <p class="empty" id="callers-empty">NO CALLS YET</p></div>
+</section>
+</div>
+
+<!-- ===================== F4 TRAFFIC ===================== -->
+<div class="page" data-page="traffic" hidden>
+<section class="scr tall" aria-labelledby="t-traf">
   <h2 class="scrt" id="t-traf"><span class="hi">LIVE TRAFFIC</span>
     <span class="opts" role="group" aria-label="traffic view">
       <button class="opt on" data-mode="petscii" type="button">PETSCII</button>
@@ -86,18 +102,31 @@
   <ol class="feed" id="feed"></ol>
   <p class="empty" id="feed-empty">NO TRAFFIC YET</p>
 </section>
+</div>
 
+<!-- ===================== F6 SECURITY ===================== -->
+<div class="page" data-page="security" hidden>
 <div class="two">
   <section class="scr" aria-labelledby="t-blk">
     <h2 class="scrt" id="t-blk"><span class="hi">BLOCKLIST</span> <span class="dim num" id="block-count"></span></h2>
-    <ul class="list" id="blocklist"></ul>
+    <ul class="list tall" id="blocklist"></ul>
     <p class="empty" id="block-empty">NOTHING BLOCKED</p>
   </section>
   <section class="scr" aria-labelledby="t-evt">
     <h2 class="scrt" id="t-evt"><span class="hi">EVENTS</span></h2>
-    <ul class="list" id="events"></ul>
+    <ul class="list tall" id="events"></ul>
     <p class="empty" id="events-empty">NOTHING YET</p>
   </section>
+</div>
+<section class="scr" aria-labelledby="t-gate">
+  <h2 class="scrt" id="t-gate"><span class="hi">GATE</span></h2>
+  <dl class="kv">
+    <dt>MODE</dt><dd id="g-mode">-</dd>
+    <dt>TIMEOUT</dt><dd class="num" id="g-timeout">-</dd>
+    <dt>BLOCK AFTER</dt><dd class="num" id="g-fails">-</dd>
+    <dt>RATE LIMIT</dt><dd>1 ATTEMPT / 5 S PER IP</dd>
+  </dl>
+</section>
 </div>
 
 <section class="scr locked" id="locked" hidden>
@@ -109,12 +138,12 @@
 <div class="rule" aria-hidden="true"></div>
 <div class="msgline" id="msg" role="status" aria-live="polite"></div>
 <footer class="fkeys" id="fkeys">
-  <button type="button" data-f="F3">F3=Exit</button>
   <button type="button" data-f="F5">F5=Refresh</button>
   <button type="button" data-f="F7">F7=Phosphor</button>
   <button type="button" data-f="F8">F8=Hang up</button>
   <button type="button" data-f="F9">F9=Unblock</button>
   <button type="button" data-f="F10">F10=Metrics</button>
+  <button type="button" data-f="F12">F12=Exit</button>
   <span class="ver dim">tcpser <span id="version">-</span></span>
 </footer>
 </div>
