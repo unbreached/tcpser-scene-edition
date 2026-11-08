@@ -175,8 +175,21 @@ if [[ -d "samples/scripts" ]]; then
     done
 fi
 
-# Environment file for secrets (dashboard token, gate password). tcpser has
-# no config file: everything else is set on the ExecStart line of the unit.
+# Main configuration file (the unit runs: tcpser --config /etc/tcpser/tcpser.conf)
+if [[ ! -f "$CONFIG_DIR/tcpser.conf" || "$FORCE" == "1" ]]; then
+    log "Writing $CONFIG_DIR/tcpser.conf (edit device/speed/port, then: tcpser check --config $CONFIG_DIR/tcpser.conf)"
+    if [[ -f data/tcpser.conf ]]; then
+        install -o root -g "$TCPSER_GROUP" -m 640 data/tcpser.conf "$CONFIG_DIR/tcpser.conf"
+    else
+        /usr/local/bin/tcpser help config > "$CONFIG_DIR/tcpser.conf"
+        chown root:"$TCPSER_GROUP" "$CONFIG_DIR/tcpser.conf"; chmod 640 "$CONFIG_DIR/tcpser.conf"
+    fi
+else
+    log "Keeping existing $CONFIG_DIR/tcpser.conf"
+fi
+
+# Environment file for secrets (dashboard token, gate password); everything
+# else is in tcpser.conf.
 if [[ ! -f "$CONFIG_DIR/tcpser.env" || "$FORCE" == "1" ]]; then
     log "Writing $CONFIG_DIR/tcpser.env (secrets; edit it, then: systemctl restart tcpser)"
     cat > "$CONFIG_DIR/tcpser.env" << 'ENVEOF'
@@ -189,7 +202,7 @@ if [[ ! -f "$CONFIG_DIR/tcpser.env" || "$FORCE" == "1" ]]; then
 # Expose the dashboard beyond localhost ONLY behind nginx+TLS (see samples/nginx):
 #TCPSER_DASH_BIND=127.0.0.1
 
-# Password gate: use `-k env:TCPSER_GATE_PASSWORD` on the ExecStart line.
+# Password gate: put `password = env:TCPSER_GATE_PASSWORD` in tcpser.conf.
 #TCPSER_GATE_PASSWORD=change-me
 
 # Persistent blocklist (already set in the unit; override here if needed)
@@ -242,8 +255,8 @@ echo
 log "TCPSER has been installed with security hardening"
 echo
 echo -e "${YELLOW}Next Steps:${NC}"
-echo "1. Set your serial device/speed/port on the ExecStart line:"
-echo "     sudo systemctl edit --full $SERVICE_NAME"
+echo "1. Set your serial device/speed/port in $CONFIG_DIR/tcpser.conf, then verify:"
+echo "     sudo tcpser check --config $CONFIG_DIR/tcpser.conf"
 echo "   Secrets (dashboard token, gate password) go in $CONFIG_DIR/tcpser.env"
 echo "2. Review and customize gate scripts in $SCRIPT_DIR/"
 echo "3. Set up firewall rules (see samples/firewall/)"

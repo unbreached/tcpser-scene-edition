@@ -31,7 +31,7 @@ curl http://127.0.0.1:8080/api/status
 
 ## Configuration Locations
 
-- **Service options:** the `ExecStart` line of the unit (`sudo systemctl edit --full tcpser`)
+- **Service options:** `/etc/tcpser/tcpser.conf` (validate with `tcpser check --config /etc/tcpser/tcpser.conf`)
 - **Secrets (dashboard token, gate password):** `/etc/tcpser/tcpser.env`
 - **Persistent blocklist / stats:** `/var/lib/tcpser/`
 - **Scripts:** `/usr/local/tcpser/scripts/`
@@ -42,9 +42,9 @@ curl http://127.0.0.1:8080/api/status
 
 ### Change Serial Device
 ```bash
-sudo nano /etc/systemd/system/tcpser.service
-# Edit ExecStart line: -d /dev/ttyUSB0
-sudo systemctl daemon-reload
+sudo nano /etc/tcpser/tcpser.conf
+# in the [line] section: device = /dev/ttyUSB0
+sudo tcpser check --config /etc/tcpser/tcpser.conf
 sudo systemctl restart tcpser
 ```
 

@@ -6,8 +6,9 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/tcpser -d /dev/ttyUSB0 -s 2400 -p 6400 -x \
-  -L /var/log/tcpser/tcpser.log -l 4
+# Options in /etc/tcpser/tcpser.conf (template: tcpser help config)
+ExecStartPre=/usr/local/bin/tcpser check --config /etc/tcpser/tcpser.conf
+ExecStart=/usr/local/bin/tcpser --config /etc/tcpser/tcpser.conf
 Environment=TCPSER_BLOCKLIST=/var/lib/tcpser/tcpser.blocklist
 User=tcpser
 Group=tcpser

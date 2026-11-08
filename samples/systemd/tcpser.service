@@ -6,19 +6,8 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-# NOTE: flags are case-sensitive and easy to confuse:
-#   -H PORT  web dashboard        (-w is the BBS watchdog in SECONDS)
-#   -E NAME  gate-success hook, a script NAME inside /usr/local/tcpser/scripts
-#   -B FILE  "all lines busy" screen sent to CALLERS (never point it at the blocklist)
-# The persistent blocklist path is set with TCPSER_BLOCKLIST (env), not a flag.
-ExecStart=/usr/local/bin/tcpser -d /dev/ttyUSB0 -s 2400 -p 6400 -x \
-  -P /usr/local/share/tcpser/prelogin.seq \
-  -G /usr/local/share/tcpser/accessgranted.seq \
-  -O /var/log/tcpser/connections.csv \
-  -Y /var/lib/tcpser/stats \
-  -L /var/log/tcpser/tcpser.log -l 4 \
-  -E gate_success_log \
-  -H 8080
+ExecStartPre=/usr/local/bin/tcpser check --config /etc/tcpser/tcpser.conf
+ExecStart=/usr/local/bin/tcpser --config /etc/tcpser/tcpser.conf
 ExecReload=/bin/kill -HUP $MAINPID
 Environment=TCPSER_BLOCKLIST=/var/lib/tcpser/tcpser.blocklist
 # Dashboard token etc. (mode 0640 root:tcpser): TCPSER_DASH_TOKEN=...

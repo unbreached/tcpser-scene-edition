@@ -31,7 +31,7 @@
 - [Security](#security)
 - [BBS recovery](#bbs-recovery)
 - [Hardware, cabling and the analyzer](#hardware-cabling-and-the-analyzer)
-- [Running as a service](#running-as-a-service)
+- [Running as a service](#running-as-a-service) (config file, systemd, launchd)
 - [Reference](#reference) (all options, environment variables, AT commands, S-registers, logs, signals)
 - [Troubleshooting](#troubleshooting)
 - [Documentation, structure, license](#documentation)
@@ -309,17 +309,41 @@ Flow control and parity are not probed; the `&K` suggestion is a heuristic to ve
 
 ## Running as a service
 
-**Linux (systemd)** — the unit runs tcpser as an unprivileged user with a writable
-state directory for the blocklist and stats:
+**Configuration file.** Everything that can be given on the command line can live
+in a file, one `key = value` per line with a `[line]` section per modem. Keys are
+the long option names. `tcpser help config` prints a commented template:
+
+```ini
+listen     = 6400
+log-level  = 4
+log-file   = /var/log/tcpser/tcpser.log
+web        = 8080
+
+[line]
+device         = /dev/ttyUSB0
+speed          = 2400
+backspace-gate = yes
+banner         = /usr/local/share/tcpser/prelogin.seq
+```
+
+```bash
+tcpser check --config /etc/tcpser/tcpser.conf   # validate, print what would run, exit 0/2
+tcpser --config /etc/tcpser/tcpser.conf -l 7    # flags after the file override it
+```
+
+**Linux (systemd)** — the unit reads `/etc/tcpser/tcpser.conf`, checks it before
+starting, and runs tcpser as an unprivileged user with a writable state directory
+for the blocklist and stats:
 
 ```bash
 sudo useradd --system --no-create-home --shell /usr/sbin/nologin -G dialout tcpser
+sudo install -d /etc/tcpser && sudo cp /usr/local/share/tcpser/tcpser.conf /etc/tcpser/
+sudo nano /etc/tcpser/tcpser.conf        # device, speed, port, gate, screens
 sudo cp /usr/local/share/tcpser/tcpser.service /etc/systemd/system/
-sudo systemctl edit --full tcpser      # device, speed, port, gate on the ExecStart line
 sudo systemctl enable --now tcpser
 ```
 
-Secrets (dashboard token, `-k env:TCPSER_GATE_PASSWORD`) go in `/etc/tcpser/tcpser.env`.
+Secrets (dashboard token, `password = env:TCPSER_GATE_PASSWORD`) go in `/etc/tcpser/tcpser.env`.
 The hardened variant and an installer are in [`samples/systemd/`](samples/systemd/) and
 [`samples/deployment/install_secure.sh`](samples/deployment/install_secure.sh).
 
@@ -340,73 +364,106 @@ Both restart tcpser automatically. `kill -HUP` reopens the log file (logrotate),
 <details>
 <summary><b>All command-line options</b> (also <code>tcpser -h</code> and <code>man tcpser</code>)</summary>
 
+Every option has a short flag, a long flag and a config-file key of the same name.
 Options are validated at startup: a bad value prints a message and exits with code 2.
+`tcpser check [options]` validates and prints the resolved configuration without
+starting. Speed, init string and gate settings propagate to later `-d`/`-v` lines.
+The tables below are generated from the binary (`make docs`).
 
-**Serial port**
+<!-- options:begin -->
 
-| Flag | Description |
-|------|-------------|
-| `-d <device>` | Serial device, e.g. `/dev/ttyUSB0`. Repeat for more lines |
-| `-v <port>` | Virtual RS232 over TCP (ip232 / VICE). Binds `127.0.0.1` |
-| `-s <speed>` | Serial speed (default 38400; standard rates 300–230400) |
-| `-S <speed>` | Speed reported in `CONNECT` (default = `-s`) |
-| `-i <string>` | Modem init string without `AT`, e.g. `-i "&C0&K3S0=1"` |
-| `-I` | Invert the DCD line |
-| `-b <list>` | On-connect caller speed menu for CBase: `-b 2400=6,9600=8,38400=10` (`speed=POKE 838 value`) |
+**General**
+
+| Option | Config key | Description |
+|--------|------------|-------------|
+| `--config FILE` | `config` | Read options from a config file (`key = value`, one per line, `[line]` sections for each modem; `tcpser help config` prints a template). Flags given on the command line are applied after the file. |
+| `-h`, `--help` | `help` | Help. `tcpser help config` prints a config template, `help markdown` / `help man` the option tables. |
+| `-V`, `--version` | `version` | Print the version and exit. |
+
+**Serial**
+
+| Option | Config key | Description |
+|--------|------------|-------------|
+| `-d`, `--device DEVICE` | `device` | Serial device, e.g. `/dev/ttyUSB0`. Repeat (or mix with `-v`) for a multi-line BBS; each `-d`/`-v` starts a new line. |
+| `-v`, `--ip232 PORT` | `ip232` | Virtual RS232 over TCP (ip232 mode, e.g. VICE). Binds `127.0.0.1`; set `TCPSER_IP232_BIND` / `--ip232-bind` to expose it (whoever reaches this port controls the modem, so firewall it). |
+| `-s`, `--speed SPEED` | `speed` | Serial port speed (default 38400; standard rates 300–230400). |
+| `-S`, `--connect-speed SPEED` | `connect-speed` | Speed reported in the `CONNECT` message (default = `--speed`). |
+| `-i`, `--init STRING` | `init` | Modem init string without `AT`, e.g. `-i "&C0&K3S0=1"`. `ATZ` and `AT&F` restore it. |
+| `-I`, `--invert-dcd` | `invert-dcd` | Invert the DCD line. |
+| `-b`, `--baud-menu LIST` | `baud-menu` | On-connect caller speed menu for CBase: `speed=pokeval` pairs, e.g. `-b 2400=6,9600=8,38400=10`. The caller picks a speed, tcpser sends `POKE 838,pokeval` to CBase and retunes the serial port. |
 
 **Network**
 
-| Flag | Description |
-|------|-------------|
-| `-p <port>[:modems]` | TCP listen port (default 6400, all modems); `-p 23:0,1 -p 64128:2` |
-| `-n <number>=<host:port>` | Phone book entry for `ATD<number>` |
-| `-D <host:port>` | Direct connection (`:` alone = receiver mode) |
+| Option | Config key | Description |
+|--------|------------|-------------|
+| `-p`, `--listen PORT[:MODEMS]` | `listen` | TCP listen port (default 6400, all modems). Repeatable; `-p 23:0,1 -p 64128:2` routes ports to specific lines. |
+| `-n`, `--phonebook NUM=HOST:PORT` | `phonebook` | Phone book entry for `ATD<number>`, e.g. `-n 5551212=bbs.example.com:23`. Repeatable. |
+| `-D`, `--direct HOST:PORT` | `direct` | Direct connection to `HOST:PORT` (`:` alone = receiver mode). |
 
 **Security / bot gate**
 
-| Flag | Description |
-|------|-------------|
-| `-x` | Require BACKSPACE twice before the modem rings |
-| `-k <password>` | Require a password (`-k env:VAR` reads it from the environment) |
-| `-W <seconds>` | Gate timeout (default 20, max 300) |
-| `-F <count>` | Gate failures before a permanent block (default 3) |
-| `-P <file\|dir>` | Pre-connect PETSCII banner; a directory rotates banners randomly |
-| `-G <file>` | Access-granted screen |
-| `-E <name>` | Gate-success hook: script name in `/usr/local/tcpser/scripts/` |
+| Option | Config key | Description |
+|--------|------------|-------------|
+| `-x`, `--backspace-gate` | `backspace-gate` | Require BACKSPACE twice before the modem rings (bots never send it). |
+| `-k`, `--password PASSWORD` | `password` | Require a password before the modem rings. `-k env:VAR` reads it from the environment so it never shows in `ps`. |
+| `-W`, `--gate-timeout SECONDS` | `gate-timeout` | Gate timeout in seconds (default 20, max 300). |
+| `-F`, `--gate-fails COUNT` | `gate-fails` | Gate failures before the caller's IP is blocked permanently (default 3, range 1–100). |
+| `-P`, `--banner FILE|DIR` | `banner` | Pre-connect PETSCII banner; a directory rotates banners randomly. |
+| `-G`, `--granted FILE` | `granted` | Access-granted screen sent after the gate. |
+| `-E`, `--gate-hook NAME` | `gate-hook` | Gate-success hook: a script NAME (not a path) inside `/usr/local/tcpser/scripts/`; gets the caller IP in `TCPSER_PEER_IP`. |
 
-**Event screens** (PETSCII `.seq` files sent when the event happens)
+**Event screens**
 
-| Flag | Event | Sent to |
-|------|-------|---------|
-| `-a` / `-A` | answer | C64 / caller |
-| `-c` / `-C` | connect | C64 / caller |
-| `-N` | no answer | caller |
-| `-B` | all lines busy | caller |
-| `-T` | inactivity timeout | caller |
+| Option | Config key | Description |
+|--------|------------|-------------|
+| `-a`, `--answer-local FILE` | `answer-local` | Sent to the C64 on answer. |
+| `-A`, `--answer-remote FILE` | `answer-remote` | Sent to the caller on answer. |
+| `-c`, `--connect-local FILE` | `connect-local` | Sent to the C64 on connect. |
+| `-C`, `--connect-remote FILE` | `connect-remote` | Sent to the caller on connect. |
+| `-N`, `--no-answer FILE` | `no-answer` | Sent to the caller when nobody answers. |
+| `-B`, `--busy FILE` | `busy` | Sent to the caller when every line is busy. |
+| `-T`, `--timeout-screen FILE` | `timeout-screen` | Sent to the caller on inactivity timeout. |
 
-**Logging and monitoring**
+**Logging**
 
-| Flag | Description |
-|------|-------------|
-| `-l <0-7>` | Log level: 0 none, 1 fatal … 4 info … 7 trace |
-| `-L <file>` | Log file (SIGHUP reopens it) |
-| `-t <flags>` | Hex traces: `m`/`M` modem in/out, `s`/`S` serial, `i`/`I` IP |
-| `-O <file>` | Connection CSV log (created mode 0600) |
-| `-Y <file>` | Persist counters across restarts |
-| `-M` | Terminal dashboard (needs a tty) |
-| `-H <port>` | Web dashboard + `/metrics` |
-| `-e <url>` | Webhook (repeatable, up to 8) |
+| Option | Config key | Description |
+|--------|------------|-------------|
+| `-l`, `--log-level 0-7` | `log-level` | Log level: 0 none, 1 fatal … 4 info … 7 trace (default 0). |
+| `-L`, `--log-file FILE` | `log-file` | Log file (SIGHUP reopens it for logrotate). |
+| `-t`, `--trace FLAGS` | `trace` | Hex traces: `m`/`M` modem in/out, `s`/`S` serial in/out, `i`/`I` IP in/out (lower = in, upper = out). |
+| `-O`, `--connlog FILE` | `connlog` | Connection CSV log (created mode 0600). |
+| `-Y`, `--stats FILE` | `stats` | Persist counters across restarts (saved every 60 s and on exit). |
 
-**Recovery and tools**
+**Recovery / limits**
 
-| Flag | Description |
-|------|-------------|
-| `-w <seconds>` | BBS watchdog (default 120, 0 = off, max 600) |
-| `-m <minutes>` | Max session time (default 0 = unlimited) |
-| `-Z` | RS232 analyzer (needs `-d`) |
-| `-V` / `-h` | Version / help |
+| Option | Config key | Description |
+|--------|------------|-------------|
+| `-w`, `--watchdog SECONDS` | `watchdog` | BBS watchdog: toggle DTR if the BBS does not re-arm after a disconnect (default 120 s, 0 = off, max 600). |
+| `-m`, `--max-session MINUTES` | `max-session` | Maximum session time in minutes (default 0 = unlimited). |
 
-`-s`, `-S`, `-i` and the gate settings propagate to later `-d`/`-v` modems.
+**Monitoring / notify**
+
+| Option | Config key | Description |
+|--------|------------|-------------|
+| `-M`, `--monitor` | `monitor` | Terminal dashboard on stderr (needs a tty). `TCPSER_TUI_PHOSPHOR`, `TCPSER_TUI_ASCII` and `NO_COLOR` tune it. |
+| `-H`, `--web PORT` | `web` | Web console and Prometheus `/metrics` on `PORT`. Binds `127.0.0.1` unless `--web-bind` says otherwise. |
+| `--web-bind ADDR` | `web-bind` | Bind address of the web console (default `127.0.0.1`; expose only behind nginx + TLS). Also `TCPSER_DASH_BIND`. |
+| `--web-token TOKEN` | `web-token` | Require `?token=TOKEN` once to sign in to the web console (letters, digits, `-`, `_`, `.`). Prefer the environment variable: a token on the command line is visible in `ps`. Also `TCPSER_DASH_TOKEN`. |
+| `--web-traffic` | `web-traffic` | Include payload content in the web traffic feed (callers' keystrokes; keep it behind a token). Also `TCPSER_DASH_TRAFFIC`. |
+| `--name NAME` | `name` | BBS name shown in the web console header. Also `TCPSER_DASH_NAME`. |
+| `-e`, `--webhook URL` | `webhook` | Webhook URL for connection events (Discord, Slack, ntfy or plain JSON POST). Repeatable, up to 8. |
+| `--phosphor green|amber|white` | `phosphor` | Terminal dashboard phosphor (`green`, `amber` or `white`). Also `TCPSER_TUI_PHOSPHOR`. |
+| `--ascii` | `ascii` | Draw the terminal dashboard with ASCII glyphs even in a UTF-8 locale. Also `TCPSER_TUI_ASCII`. |
+
+**Files**
+
+| Option | Config key | Description |
+|--------|------------|-------------|
+| `--blocklist FILE` | `blocklist` | Persistent IP blocklist (default `tcpser.blocklist` in the working directory). Also `TCPSER_BLOCKLIST`. |
+| `--allowlist FILE` | `allowlist` | Allowlist of IPs that skip the blocklist, the rate limiter and the gate (default `tcpser.allowlist` in the working directory). Also `TCPSER_ALLOWLIST`. |
+| `--ip232-bind ADDR` | `ip232-bind` | Bind address of the `-v` (ip232) listener (default `127.0.0.1`). Also `TCPSER_IP232_BIND`. |
+| `-Z`, `--analyze` | `analyze` | RS232 analyzer: diagnose adapter wiring (needs `-d`). |
+<!-- options:end -->
 
 </details>
 
@@ -422,6 +479,11 @@ Options are validated at startup: a bad value prints a message and exits with co
 | `TCPSER_DASH_TRAFFIC` | `1` = include payload bytes in the traffic feed | off |
 | `TCPSER_DASH_NAME` | BBS name shown in the dashboard header | `TCPSER` |
 | `TCPSER_IP232_BIND` | bind address of the `-v` listener | `127.0.0.1` |
+| `TCPSER_TUI_PHOSPHOR` | terminal dashboard phosphor `green`/`amber`/`white` | `green` |
+| `TCPSER_TUI_ASCII` | `1` = ASCII glyphs in the terminal dashboard | off |
+
+Each has a long option / config key (`--blocklist`, `--web-bind`, `--web-token`, `--web-traffic`,
+`--name`, `--ip232-bind`, `--phosphor`, `--ascii`) that takes precedence over the variable.
 
 </details>
 

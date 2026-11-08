@@ -7,18 +7,8 @@ Wants=network-online.target
 [Service]
 Type=simple
 
-# --- Edit these to match your setup -------------------------------------
-# Serial device + speed, TCP port, BACKSPACE-x2 bot gate (-x), banner/granted
-# screens, connection CSV, web dashboard on localhost:8080.
-# Password gate instead of -x:  -k env:TCPSER_GATE_PASSWORD  (set it in the
-# EnvironmentFile below, never on the command line).
-ExecStart=/usr/local/bin/tcpser -d /dev/ttyUSB0 -s 2400 -p 6400 -x \
-  -P /usr/local/share/tcpser/prelogin.seq \
-  -G /usr/local/share/tcpser/accessgranted.seq \
-  -O /var/log/tcpser/connections.csv \
-  -Y /var/lib/tcpser/stats \
-  -L /var/log/tcpser/tcpser.log -l 4 \
-  -H 8080
+ExecStartPre=/usr/local/bin/tcpser check --config /etc/tcpser/tcpser.conf
+ExecStart=/usr/local/bin/tcpser --config /etc/tcpser/tcpser.conf
 ExecReload=/bin/kill -HUP $MAINPID
 
 # Persistent blocklist must live somewhere the service can WRITE; the data

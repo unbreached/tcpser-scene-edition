@@ -126,49 +126,7 @@ int main(int argc, char *argv[]) {
     }
   }
 
-  fprintf(stderr, "\n");
-  fprintf(stderr, "  TCPSER %s - %s\n", VERSION, EDITION);
-  fprintf(stderr, "  ====================================\n");
-  fprintf(stderr, "  Ports:   %d configured\n", port_count);
-  for(i = 0; i < port_count; i++) {
-    fprintf(stderr, "    %s -> modems", ports[i].addr);
-    for(int j = 0; j < ports[i].modem_count; j++) {
-      fprintf(stderr, "%s%d", j == 0 ? " " : ",", ports[i].modem_list[j]);
-    }
-    fprintf(stderr, "\n");
-  }
-  fprintf(stderr, "  Modems:  %d\n", modem_count);
-  for(i = 0; i < modem_count; i++) {
-    fprintf(stderr, "    #%d: %s @ %d baud%s\n", i,
-            cfg[i].dce_data.is_ip232 ? "(ip232)" : cfg[i].dce_data.tty,
-            cfg[i].dce_data.port_speed,
-            cfg[i].direct_conn ? " [direct]" : "");
-  }
-  fprintf(stderr, "  DCD:     %s\n", cfg[0].force_dcd ? "always on (6551 ACIA mode)" : "follows carrier");
-  fprintf(stderr, "  DSR:     %s\n", cfg[0].force_dsr ? "always on" : "follows state");
-  if(cfg[0].gate_mode == 1)
-    fprintf(stderr, "  Gate:    BACKSPACE x2 (%ds timeout, block after %d fails)\n",
-            cfg[0].gate_timeout, cfg[0].gate_max_fails);
-  else if(cfg[0].gate_mode == 2)
-    fprintf(stderr, "  Gate:    password (%ds timeout, block after %d fails)\n",
-            cfg[0].gate_timeout, cfg[0].gate_max_fails);
-  else
-    fprintf(stderr, "  Gate:    disabled\n");
-  if(cfg[0].watchdog_timeout > 0)
-    fprintf(stderr, "  Watch:   %ds (DTR toggle after idle disconnect)\n", cfg[0].watchdog_timeout);
-  else
-    fprintf(stderr, "  Watch:   disabled\n");
-  if(cfg[0].max_session_minutes > 0)
-    fprintf(stderr, "  MaxTime: %d min\n", cfg[0].max_session_minutes);
-  else
-    fprintf(stderr, "  MaxTime: unlimited\n");
-  {
-    const char *sp = dashboard_get_stats_path();
-    if(sp)
-      fprintf(stderr, "  Stats:   %s (auto-save every 60s)\n", sp);
-  }
-  fprintf(stderr, "  Signals: SIGHUP=reopen log, SIGUSR1=dump stats\n");
-  fprintf(stderr, "  ====================================\n\n");
+  print_config_summary(stderr, cfg, modem_count, ports, port_count);
 
   /* Initialize dashboard if -M flag is set */
   if(log_get_trace_flags() & TRACE_MONITOR) {
@@ -204,11 +162,8 @@ int main(int argc, char *argv[]) {
       const char *sp = dashboard_get_stats_path();
       if(sp) dashboard_load_stats(sp);
     }
-    if(webserver_start() == 0) {
-      fprintf(stderr, "  Web:     http://%s:%d/%s\n",
-              webserver_get_bind(), webserver_get_port(),
-              webserver_has_token() ? "  (token required)" : "");
-    }   /* failure already printed; previously we announced a URL that did not exist */
+    if(webserver_start() != 0)
+      fprintf(stderr, "  Web:     NOT listening on %s:%d (see log)\n", webserver_get_bind(), webserver_get_port());
   }
 
   for(i = 0; i < modem_count; i++) {

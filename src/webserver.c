@@ -530,6 +530,11 @@ static void *webserver_thread(void *arg) {
  * ------------------------------------------------------------------------- */
 void webserver_init(int port) {
   g_web_port = port;
+}
+
+/* Called once option parsing is complete, so --web-bind/--web-token given
+ * after -H (or in a config file) are seen. */
+void webserver_read_env(void) {
   const char *bind_env = getenv("TCPSER_DASH_BIND");
   const char *token_env = getenv("TCPSER_DASH_TOKEN");
   const char *traffic_env = getenv("TCPSER_DASH_TRAFFIC");

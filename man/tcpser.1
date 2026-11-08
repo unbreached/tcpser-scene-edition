@@ -1,5 +1,5 @@
 .\"                                      Hey, EMACS: -*- nroff -*-
-.TH TCPSER 1 "August 2026" "tcpser 1.4.0"
+.TH TCPSER 1 "November 2026" "tcpser 1.4.1"
 .SH NAME
 tcpser \- Hayes compatible modem emulator over TCP/IP
 .SH SYNOPSIS
@@ -11,6 +11,15 @@ tcpser \- Hayes compatible modem emulator over TCP/IP
 .br
 .B tcpser
 \-d \fIdevice\fP \-Z
+.br
+.B tcpser
+\-\-config \fIfile\fP [\fIoverrides\fP]
+.br
+.B tcpser check
+[\fIsame options\fP]
+.br
+.B tcpser help
+[config | markdown | man]
 .SH DESCRIPTION
 \fBtcpser\fP turns a PC serial port into an emulated Hayes compatible modem that
 uses TCP/IP for incoming and outgoing connections.  It can be used to allow
@@ -22,175 +31,204 @@ This hardened fork adds a security gate (bot protection), persistent IP
 blocklist, PETSCII pre-connect screens, and an RS232 analyzer mode for
 diagnosing adapter wiring.
 .SH OPTIONS
-.SS "Serial Port"
+Every option has a short flag, a long flag and a configuration-file key of the
+same name. Values are validated at startup; a bad value prints a message and
+exits with status 2.
+.\" options:begin
+.SS "General"
 .TP
-.BI \-d " device"
-Serial device (e.g. /dev/ttyUSB0).  May be repeated, and mixed with \-v, for a multi-line BBS.
+\fB\-\-config\fP \fIFILE\fP
+Read options from a config file (\fBkey = value\fP, one per line, \fB[line]\fP sections for each modem; \fBtcpser help config\fP prints a template). Flags given on the command line are applied after the file.
 .TP
-.BI \-v " port"
-Virtual RS232 via TCP (ip232 mode, e.g. VICE).  Binds 127.0.0.1 by default;
-set TCPSER_IP232_BIND to expose it (whoever reaches this port controls the
-modem, so firewall it).  May be repeated, and mixed with \-d.
+\fB\-h\fP, \fB\-\-help\fP
+Help. \fBtcpser help config\fP prints a config template, \fBhelp markdown\fP / \fBhelp man\fP the option tables.
 .TP
-.BI \-s " speed"
-Serial port speed (default: 38400).
+\fB\-V\fP, \fB\-\-version\fP
+Print the version and exit.
+.SS "Serial"
 .TP
-.BI \-S " speed"
-Speed reported in CONNECT message (defaults to \-s value).
+\fB\-d\fP, \fB\-\-device\fP \fIDEVICE\fP
+Serial device, e.g. \fB/dev/ttyUSB0\fP. Repeat (or mix with \fB\-v\fP) for a multi\-line BBS; each \fB\-d\fP/\fB\-v\fP starts a new line.
 .TP
-.B \-I
-Invert DCD pin.
+\fB\-v\fP, \fB\-\-ip232\fP \fIPORT\fP
+Virtual RS232 over TCP (ip232 mode, e.g. VICE). Binds \fB127.0.0.1\fP; set \fBTCPSER_IP232_BIND\fP / \fB\-\-ip232\-bind\fP to expose it (whoever reaches this port controls the modem, so firewall it).
 .TP
-.BI \-i " string"
-Modem init string (omit AT prefix).
+\fB\-s\fP, \fB\-\-speed\fP \fISPEED\fP
+Serial port speed (default 38400; standard rates 300–230400).
 .TP
-.BI \-b " list"
-On-connect caller speed menu (requires CBase).
-.I list
-is a comma-separated set of
-.IR speed = pokeval
-pairs.  When a caller connects they are shown a menu of the listed speeds; on
-selection tcpser sends
-.B POKE 838,\fIpokeval\fP
-to CBase (which executes it from its input stream) and retunes its own serial
-port to the chosen
-.IR speed ,
-so the whole session runs at that rate.  Example:
-.B \-b 2400=6,9600=8,38400=10
-(the pokeval numbers are your CBase POKE 838 baud values).
+\fB\-S\fP, \fB\-\-connect\-speed\fP \fISPEED\fP
+Speed reported in the \fBCONNECT\fP message (default = \fB\-\-speed\fP).
+.TP
+\fB\-i\fP, \fB\-\-init\fP \fISTRING\fP
+Modem init string without \fBAT\fP, e.g. \fB\-i "&C0&K3S0=1"\fP. \fBATZ\fP and \fBAT&F\fP restore it.
+.TP
+\fB\-I\fP, \fB\-\-invert\-dcd\fP
+Invert the DCD line.
+.TP
+\fB\-b\fP, \fB\-\-baud\-menu\fP \fILIST\fP
+On\-connect caller speed menu for CBase: \fBspeed=pokeval\fP pairs, e.g. \fB\-b 2400=6,9600=8,38400=10\fP. The caller picks a speed, tcpser sends \fBPOKE 838,pokeval\fP to CBase and retunes the serial port.
 .SS "Network"
 .TP
-.BI \-p " port"
-TCP listen port, optionally restricted to specific modems:
-.IR port [: modem , modem ...]
-(default: 6400, all modems).  Example: \-p 23:0,1 \-p 64128:2.
+\fB\-p\fP, \fB\-\-listen\fP \fIPORT[:MODEMS]\fP
+TCP listen port (default 6400, all modems). Repeatable; \fB\-p 23:0,1 \-p 64128:2\fP routes ports to specific lines.
 .TP
-.BI \-n " number=address"
-Phone book entry (e.g. \-n 5551212=bbs.example.com:23).
+\fB\-n\fP, \fB\-\-phonebook\fP \fINUM=HOST:PORT\fP
+Phone book entry for \fBATD<number>\fP, e.g. \fB\-n 5551212=bbs.example.com:23\fP. Repeatable.
 .TP
-.BI \-D " address:port"
-Direct connection.  Use \fB:\fP alone for receiver mode.
-.SS "Security / Bot Gate"
+\fB\-D\fP, \fB\-\-direct\fP \fIHOST:PORT\fP
+Direct connection to \fBHOST:PORT\fP (\fB:\fP alone = receiver mode).
+.SS "Security / bot gate"
 .TP
-.B \-x
-Require client to press BACKSPACE twice within timeout before allowing
-connection.  Accepts 0x08, 0x14, 0x7F variants (PETSCII/ASCII/VT).
+\fB\-x\fP, \fB\-\-backspace\-gate\fP
+Require BACKSPACE twice before the modem rings (bots never send it).
 .TP
-.BI \-k " password"
-Require password within timeout.  Input is PETSCII/ASCII normalized and
-case-insensitive.  Use \fB\-k env:VARNAME\fP to read the password from the
-named environment variable instead of the command line, keeping it out of
-the process table (\fBps\fP).
+\fB\-k\fP, \fB\-\-password\fP \fIPASSWORD\fP
+Require a password before the modem rings. \fB\-k env:VAR\fP reads it from the environment so it never shows in \fBps\fP.
 .TP
-.BI \-W " seconds"
-Gate timeout in seconds (default: 20, maximum: 300).
+\fB\-W\fP, \fB\-\-gate\-timeout\fP \fISECONDS\fP
+Gate timeout in seconds (default 20, max 300).
 .TP
-.BI \-F " count"
-Number of gate failures before permanent IP block (default: 3).
+\fB\-F\fP, \fB\-\-gate\-fails\fP \fICOUNT\fP
+Gate failures before the caller's IP is blocked permanently (default 3, range 1–100).
 .TP
-.BI \-P " file"
-Pre-connect banner file.  Sent immediately after TCP accept, before
-any gate or serial traffic.  Can be PETSCII or ANSI.
+\fB\-P\fP, \fB\-\-banner\fP \fIFILE|DIR\fP
+Pre\-connect PETSCII banner; a directory rotates banners randomly.
 .TP
-.BI \-G " file"
-Access granted screen file.  Sent after successful gate.  If not
-specified, a default green "ACCESS GRANTED" message is shown.
+\fB\-G\fP, \fB\-\-granted\fP \fIFILE\fP
+Access\-granted screen sent after the gate.
 .TP
-.BI \-E " name"
-Script to run after a successful gate: a file NAME (letters, digits, - _ .)
-inside /usr/local/tcpser/scripts/, not a path.  Runs detached (the caller is
-not delayed) and is killed after 30 seconds.  No arguments are passed; the
-environment variable TCPSER_PEER_IP contains the caller's IP.
-.SS "Event Files"
+\fB\-E\fP, \fB\-\-gate\-hook\fP \fINAME\fP
+Gate\-success hook: a script NAME (not a path) inside \fB/usr/local/tcpser/scripts/\fP; gets the caller IP in \fBTCPSER_PEER_IP\fP.
+.SS "Event screens"
 .TP
-.BI \-a " file"
-Send to serial (local) side upon answer.
+\fB\-a\fP, \fB\-\-answer\-local\fP \fIFILE\fP
+Sent to the C64 on answer.
 .TP
-.BI \-A " file"
-Send to TCP (remote) side upon answer.
+\fB\-A\fP, \fB\-\-answer\-remote\fP \fIFILE\fP
+Sent to the caller on answer.
 .TP
-.BI \-c " file"
-Send to serial (local) side upon connect.
+\fB\-c\fP, \fB\-\-connect\-local\fP \fIFILE\fP
+Sent to the C64 on connect.
 .TP
-.BI \-C " file"
-Send to TCP (remote) side upon connect.
+\fB\-C\fP, \fB\-\-connect\-remote\fP \fIFILE\fP
+Sent to the caller on connect.
 .TP
-.BI \-N " file"
-Send to TCP when no answer (after 10 rings).
+\fB\-N\fP, \fB\-\-no\-answer\fP \fIFILE\fP
+Sent to the caller when nobody answers.
 .TP
-.BI \-B " file"
-Send to TCP when all modems are busy.
+\fB\-B\fP, \fB\-\-busy\fP \fIFILE\fP
+Sent to the caller when every line is busy.
 .TP
-.BI \-T " file"
-Send to TCP upon inactivity timeout.
+\fB\-T\fP, \fB\-\-timeout\-screen\fP \fIFILE\fP
+Sent to the caller on inactivity timeout.
 .SS "Logging"
 .TP
-.BI \-l " level"
-Log level: 0 (NONE), 1 (FATAL), 2 (ERROR), 3 (WARN), 4 (INFO),
-5 (DEBUG), 6 (ENTER_EXIT), 7 (TRACE).  Default: 0.
+\fB\-l\fP, \fB\-\-log\-level\fP \fI0\-7\fP
+Log level: 0 none, 1 fatal … 4 info … 7 trace (default 0).
 .TP
-.BI \-L " file"
-Log to file (default: stderr).
+\fB\-L\fP, \fB\-\-log\-file\fP \fIFILE\fP
+Log file (SIGHUP reopens it for logrotate).
 .TP
-.BI \-t " flags"
-Trace flags (can be combined): m=modem in, M=modem out,
-s=serial in, S=serial out, i=IP in, I=IP out.
+\fB\-t\fP, \fB\-\-trace\fP \fIFLAGS\fP
+Hex traces: \fBm\fP/\fBM\fP modem in/out, \fBs\fP/\fBS\fP serial in/out, \fBi\fP/\fBI\fP IP in/out (lower = in, upper = out).
 .TP
-.BI \-O " file"
-Connection log in CSV format (timestamp,ip,result,duration,bytes_in,bytes_out).
-The file is created with owner-only permissions (0600) as it records caller
-IP addresses.
+\fB\-O\fP, \fB\-\-connlog\fP \fIFILE\fP
+Connection CSV log (created mode 0600).
 .TP
-.BI \-Y " file"
-Statistics file.  When set, connection counters are auto-saved every 60
-seconds and on shutdown, and restored on startup.  Without \-Y, statistics
-are not persisted.
-.SS "Recovery / Limits"
+\fB\-Y\fP, \fB\-\-stats\fP \fIFILE\fP
+Persist counters across restarts (saved every 60 s and on exit).
+.SS "Recovery / limits"
 .TP
-.BI \-w " seconds"
-BBS watchdog timeout (default: 120, 0 = off, maximum: 600).  If no serial
-data arrives from the BBS within this many seconds after a caller
-disconnects, tcpser toggles DTR/DCD (and ultimately sends a BREAK) to force
-the BBS to notice carrier loss.
+\fB\-w\fP, \fB\-\-watchdog\fP \fISECONDS\fP
+BBS watchdog: toggle DTR if the BBS does not re\-arm after a disconnect (default 120 s, 0 = off, max 600).
 .TP
-.BI \-m " minutes"
-Maximum session time in minutes (default: 0 = unlimited).  Disconnects a
-caller after this many minutes to prevent line hogging.
-.SS "Monitoring / Notifications"
+\fB\-m\fP, \fB\-\-max\-session\fP \fIMINUTES\fP
+Maximum session time in minutes (default 0 = unlimited).
+.SS "Monitoring / notify"
 .TP
-.B \-M
-Live full-screen ASCII traffic monitor on stderr (colour).  Distinct from
-\fB\-t M\fP, which only enables modem-output tracing.
+\fB\-M\fP, \fB\-\-monitor\fP
+Terminal dashboard on stderr (needs a tty). \fBTCPSER_TUI_PHOSPHOR\fP, \fBTCPSER_TUI_ASCII\fP and \fBNO_COLOR\fP tune it.
 .TP
-.BI \-H " port"
-Start the HTTP web dashboard (live stats, connection history, and a live
-traffic feed) and Prometheus \fB/metrics\fP endpoint on the given port.  Works
-without \fB\-M\fP.  Binds to 127.0.0.1 by default; set \fBTCPSER_DASH_BIND\fP to
-change the bind address, \fBTCPSER_DASH_TOKEN\fP to require a \fB?token=\fP
-value on every request, and \fBTCPSER_DASH_TRAFFIC=1\fP to include payload
-content (which may contain what callers type) in the traffic feed.
+\fB\-H\fP, \fB\-\-web\fP \fIPORT\fP
+Web console and Prometheus \fB/metrics\fP on \fBPORT\fP. Binds \fB127.0.0.1\fP unless \fB\-\-web\-bind\fP says otherwise.
 .TP
-.BI \-e " url"
-Webhook URL notified on CONNECTED, DISCONNECTED, GATE_FAIL and IP_BLOCKED
-events (Discord/Slack/ntfy/generic JSON POST).  May be repeated for multiple
-targets.  Requires the \fBcurl\fP binary on PATH.
-.SS "Tools"
+\fB\-\-web\-bind\fP \fIADDR\fP
+Bind address of the web console (default \fB127.0.0.1\fP; expose only behind nginx + TLS). Also the environment variable \fBTCPSER_DASH_BIND\fP.
 .TP
-.B \-Z
-RS232 analyzer mode.  Interactive diagnostic that detects the baud rate
-from the BBS's AT init, probes control-line wiring (DTR/RTS toggling), verifies
-an OK exchange, infers the cartridge type (SwiftLink, Turbo232, GLINK232,
-userport) and recommends tcpser flags.  Flow control and parity are not
-probed.  Requires \-d.
+\fB\-\-web\-token\fP \fITOKEN\fP
+Require \fB?token=TOKEN\fP once to sign in to the web console (letters, digits, \fB\-\fP, \fB_\fP, \fB.\fP). Prefer the environment variable: a token on the command line is visible in \fBps\fP. Also the environment variable \fBTCPSER_DASH_TOKEN\fP.
 .TP
-.B \-V
-Print version and exit.
+\fB\-\-web\-traffic\fP
+Include payload content in the web traffic feed (callers' keystrokes; keep it behind a token). Also the environment variable \fBTCPSER_DASH_TRAFFIC\fP.
 .TP
-.B \-h
-Show help summary and exit.
+\fB\-\-name\fP \fINAME\fP
+BBS name shown in the web console header. Also the environment variable \fBTCPSER_DASH_NAME\fP.
+.TP
+\fB\-e\fP, \fB\-\-webhook\fP \fIURL\fP
+Webhook URL for connection events (Discord, Slack, ntfy or plain JSON POST). Repeatable, up to 8.
+.TP
+\fB\-\-phosphor\fP \fIgreen|amber|white\fP
+Terminal dashboard phosphor (\fBgreen\fP, \fBamber\fP or \fBwhite\fP). Also the environment variable \fBTCPSER_TUI_PHOSPHOR\fP.
+.TP
+\fB\-\-ascii\fP
+Draw the terminal dashboard with ASCII glyphs even in a UTF\-8 locale. Also the environment variable \fBTCPSER_TUI_ASCII\fP.
+.SS "Files"
+.TP
+\fB\-\-blocklist\fP \fIFILE\fP
+Persistent IP blocklist (default \fBtcpser.blocklist\fP in the working directory). Also the environment variable \fBTCPSER_BLOCKLIST\fP.
+.TP
+\fB\-\-allowlist\fP \fIFILE\fP
+Allowlist of IPs that skip the blocklist, the rate limiter and the gate (default \fBtcpser.allowlist\fP in the working directory). Also the environment variable \fBTCPSER_ALLOWLIST\fP.
+.TP
+\fB\-\-ip232\-bind\fP \fIADDR\fP
+Bind address of the \fB\-v\fP (ip232) listener (default \fB127.0.0.1\fP). Also the environment variable \fBTCPSER_IP232_BIND\fP.
+.TP
+\fB\-Z\fP, \fB\-\-analyze\fP
+RS232 analyzer: diagnose adapter wiring (needs \fB\-d\fP).
+.\" options:end
+.SH CONFIGURATION FILE
+.B tcpser \-\-config
+.I file
+reads options from a file: one
+.B key = value
+per line, keys are the long option names, flags take yes/no, `#' starts a
+comment. Everything before the first
+.B [line]
+section is global; each
+.B [line]
+section is one modem and must contain
+.B device
+or
+.BR ip232 .
+Per-line settings (speed, init, gate, screens, watchdog) carry over to the
+next line unless changed. Flags given on the command line are applied after
+the file and override it. Secrets belong in the environment
+.RB ( "password = env:VAR" ,
+.BR TCPSER_DASH_TOKEN ).
+.PP
+.B tcpser help config
+prints a commented template;
+.B tcpser check \-\-config
+.I file
+validates it, prints the resolved configuration and exits 0 (or 2 with the
+offending line number) without opening ports or creating files.
+.PP
+.nf
+listen     = 6400
+log-level  = 4
+log-file   = /var/log/tcpser/tcpser.log
+web        = 8080
+
+[line]
+device         = /dev/ttyUSB0
+speed          = 2400
+backspace-gate = yes
+banner         = /usr/local/share/tcpser/prelogin.seq
+.fi
 .SH NOTES
 Options \-d/\-v can be repeated for multi-line BBS configurations.
 Options \-s, \-S, \-i, and gate settings propagate to subsequent modems.
+The option tables above are generated from the binary (\fBmake docs\fP).
 .PP
 DCD follows carrier by default (AT&C1).  6551 ACIA-based cartridges
 (SwiftLink, Turbo232, GLINK232) disable their receiver when DCD is inactive;
@@ -217,6 +255,9 @@ Analyzer mode:
 tcpser -d /dev/ttyUSB0 -s 2400 -Z
 .fi
 .SH FILES
+.TP
+.I /etc/tcpser/tcpser.conf
+Configuration file used by the shipped systemd unit (see CONFIGURATION FILE).
 .TP
 .I data/tcpser.blocklist
 Default persistent IP blocklist.  Override with TCPSER_BLOCKLIST

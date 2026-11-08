@@ -14,3 +14,4 @@ core
 src/*.d
 build/
 src/web_assets.c
+tests/__pycache__/

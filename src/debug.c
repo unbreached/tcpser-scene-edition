@@ -82,6 +82,13 @@ const char *log_get_filename(void) {
   return log_filename[0] ? log_filename : NULL;
 }
 
+/* check mode: remember the name without opening (and creating) the file */
+void log_set_filename_only(const char *name) {
+  if(name) snprintf(log_filename, sizeof(log_filename), "%s", name);
+}
+
+int log_get_level(void) { return log_level; }
+
 void log_reopen(void) {
   if(log_filename[0]) {
     FILE *f = fopen(log_filename, "a");

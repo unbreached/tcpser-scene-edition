@@ -11,6 +11,8 @@
 #define CONNLOG_HANGUP     "HANGUP"
 
 void connlog_init(const char *path);
+void connlog_set_path(const char *path);      /* remember only, no file I/O (check mode) */
+const char *connlog_get_path(void);           /* NULL when disabled */
 void connlog_event(const char *ip, const char *result);
 void connlog_session_end(const char *ip, int duration, long bytes_in, long bytes_out);
 

@@ -3,6 +3,7 @@
 #define FALSE 0
 #endif
 
+#include <stdio.h>
 #include "modem_core.h"
 
 #define MAX_PORTS 8
@@ -17,6 +18,8 @@ typedef struct {
 } port_config;
 
 void print_help(char *name);
+/* The startup summary; also what `tcpser check` prints. */
+void print_config_summary(FILE *out, modem_config cfg[], int modem_count, port_config ports[], int port_count);
 int init(int argc,
          char **argv,
          modem_config cfg[],

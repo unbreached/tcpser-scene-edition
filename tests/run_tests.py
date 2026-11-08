@@ -67,9 +67,9 @@ def wait_port(port, timeout=5.0):
 
 
 class Server:
-    def __init__(self, *extra, env=None, serial=None):
-        self.vport = free_port()
-        self.cport = free_port()
+    def __init__(self, *extra, env=None, serial=None, config=None, vport=None, cport=None):
+        self.vport = vport or free_port()
+        self.cport = cport or free_port()
         self.tmp = tempfile.mkdtemp(prefix="tcpser-test-")
         self.log = os.path.join(self.tmp, "server.log")
         e = dict(os.environ)
@@ -78,8 +78,11 @@ class Server:
         e.setdefault("ASAN_OPTIONS", "halt_on_error=0:detect_leaks=0")
         if env:
             e.update(env)
-        dev = ["-d", serial] if serial else ["-v", str(self.vport)]
-        self.cmd = [BIN] + dev + ["-p", str(self.cport), "-l", "7", "-L", self.log] + list(extra)
+        if config:
+            self.cmd = [BIN, "--config", config, "-l", "7", "-L", self.log] + list(extra)
+        else:
+            dev = ["-d", serial] if serial else ["-v", str(self.vport)]
+            self.cmd = [BIN] + dev + ["-p", str(self.cport), "-l", "7", "-L", self.log] + list(extra)
         global LAST_TMP
         LAST_TMP = self.tmp
         self.errf = open(os.path.join(self.tmp, "stderr"), "wb")
@@ -328,6 +331,68 @@ def t_cli():
     assert rc == 0 and b"Usage" in out, f"-h rc={rc}"
     rc, out, err = run("-V")
     assert rc == 0 and b"TCPSER" in out
+
+
+@test("config file: check validates and prints, errors carry line numbers, --config runs a session")
+def t_config():
+    def run(*args):
+        p = subprocess.run([BIN] + list(args), capture_output=True, timeout=10)
+        return p.returncode, p.stdout, p.stderr
+    tmp = tempfile.mkdtemp(prefix="tcpser-cfg-")
+    vport, cport = free_port(), free_port()
+    conf = os.path.join(tmp, "t.conf")
+    with open(conf, "w") as f:
+        f.write(f"""# test
+listen = {cport}
+blocklist = {tmp}/bl
+web-bind = 127.0.0.1
+name = "Test BBS"
+
+[line]
+ip232 = {vport}
+speed = 2400
+init = &C0
+backspace_gate = yes      # underscores and trailing comments are fine
+gate-timeout = 30
+""")
+    # check: valid, prints the resolved config, creates nothing, exits 0
+    rc, out, err = run("check", "--config", conf, "--log-file", os.path.join(tmp, "x.log"))
+    assert rc == 0, f"check rc={rc}: {err[:300]!r}"
+    assert b"configuration is valid" in out and b"BACKSPACE x2 (30s" in out and b"AT&C0" in out, out[:600]
+    assert not os.path.exists(os.path.join(tmp, "x.log")), "check created the log file"
+    # command line overrides the file
+    rc, out, err = run("check", "--config", conf, "-W", "45")
+    assert rc == 0 and b"(45s" in out, out[:400]
+    # errors: unknown key, global key inside [line], [line] without device, bad flag value
+    for body, needle in ((b"bogus = 1\n", b":1: unknown key 'bogus'"),
+                         (b"[line]\nip232 = 1\nlisten = 2\n", b":3: 'listen' is a global"),
+                         (b"[line]\nspeed = 2400\n", b"no 'device' or 'ip232'"),
+                         (b"monitor = maybe\n[line]\nip232 = 1\n", b"flag expects yes/no")):
+        bad = os.path.join(tmp, "bad.conf")
+        with open(bad, "wb") as f:
+            f.write(body)
+        rc, out, err = run("check", "--config", bad)
+        assert rc == 2 and needle in err, f"{body!r}: rc={rc} err={err[:200]!r}"
+    rc, out, err = run("check", "--config", os.path.join(tmp, "missing.conf"))
+    assert rc == 2 and b"No such file" in err, err[:200]
+    # long options on the command line
+    rc, out, err = run("check", "--ip232", str(vport), "--listen", str(cport), "--speed", "1200", "--backspace-gate", "--web", "1", "--web-token", "bad token")
+    assert rc == 2 and b"TCPSER_DASH_TOKEN" in err, f"token validation: rc={rc} {err[:200]!r}"
+    rc, out, err = run("check", "--ip232", str(vport), "--listen", str(cport), "--speed", "1200", "--backspace-gate")
+    assert rc == 0 and b"@ 1200 baud, BACKSPACE x2" in out, out[:400]
+    # and a real session started from the file (gate from the file applies)
+    srv = Server(config=conf, vport=vport, cport=cport)
+    try:
+        v = srv.vice()
+        c = srv.caller()
+        r = rd(c, 1.5)
+        assert r, "no gate prompt from the file-configured line"
+        c.sendall(b"\x14\x14")
+        r = rd(v, 3.0, until=b"RING")
+        assert b"RING" in r, f"no RING after BACKSPACE x2: {r!r}"
+        c.close(); v.close()
+    finally:
+        srv.stop()
 
 
 @test("AT parser: huge S-register number saturates, no crash; S value clamps to 255")

@@ -2,6 +2,7 @@
 #define WEBHOOK_H 1
 
 void webhook_init(const char *url);
+int  webhook_count(void);
 void webhook_notify(const char *event, const char *ip);
 
 #endif

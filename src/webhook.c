@@ -32,6 +32,8 @@ static void mask_url(const char *url, char *out, size_t outsz) {
   }
 }
 
+int webhook_count(void) { return g_webhook_count; }
+
 void webhook_init(const char *url) {
   char masked[64];
   if(!url || !url[0]) return;

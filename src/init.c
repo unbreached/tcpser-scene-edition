@@ -14,12 +14,16 @@
 #include "util.h"
 #include "serial.h"
 #include "secure_script.h"
+#include "options.h"
+#include <getopt.h>
 #include <sys/stat.h>
 #include <errno.h>
 #include <ctype.h>
 
 /* Exit codes: 0 ok, 1 runtime, 2 usage/config error. */
 #define EXIT_USAGE 2
+
+static int g_check_mode = 0;      /* `tcpser check ...`: validate, print, exit 0; no files are created */
 
 static void usage_error(const char *name, const char *fmt, ...) __attribute__((format(printf, 2, 3), noreturn));
 static void usage_error(const char *name, const char *fmt, ...) {
@@ -32,127 +36,166 @@ static void usage_error(const char *name, const char *fmt, ...) {
   exit(EXIT_USAGE);
 }
 
+/* "-d" / "--web-bind": how an option is named in messages */
+static const char *optname(int id) {
+  static char buf[4][48]; static int k = 0;
+  char *b = buf[k++ & 3];
+  const opt_desc *o = opt_by_id(id);
+  if(id > 0 && id <= 255) snprintf(b, sizeof(buf[0]), "-%c", id);
+  else if(o) snprintf(b, sizeof(buf[0]), "--%s", o->name);
+  else snprintf(b, sizeof(buf[0]), "option");
+  return b;
+}
+
 /* Strict integer option: rejects "abc", "12abc", empty. */
-static int opt_int(const char *name, char flag, const char *s) {
+static int opt_int(const char *name, int flag, const char *s) {
   char *end = NULL;
   errno = 0;
   long v = strtol(s, &end, 10);
   if(!s[0] || !end || *end != '\0' || errno != 0 || v < -2147483647L || v > 2147483647L)
-    usage_error(name, "-%c expects a number, got '%s'", flag, s);
+    usage_error(name, "%s expects a number, got '%s'", optname(flag), s);
   return (int)v;
 }
 
 /* Clamp with a visible warning (previously a LOG_WARN nobody saw at startup). */
-static int opt_clamp(char flag, int v, int lo, int hi) {
-  if(v < lo) { fprintf(stderr, "  Warning: -%c %d is below the minimum, using %d\n", flag, v, lo); return lo; }
-  if(v > hi) { fprintf(stderr, "  Warning: -%c %d is above the maximum, using %d\n", flag, v, hi); return hi; }
+static int opt_clamp(int flag, int v, int lo, int hi) {
+  if(v < lo) { fprintf(stderr, "  Warning: %s %d is below the minimum, using %d\n", optname(flag), v, lo); return lo; }
+  if(v > hi) { fprintf(stderr, "  Warning: %s %d is above the maximum, using %d\n", optname(flag), v, hi); return hi; }
   return v;
 }
 
 /* A file option must exist and be readable now, not fail silently per caller. */
-static void opt_readable(const char *name, char flag, const char *path, int allow_dir) {
+static void opt_readable(const char *name, int flag, const char *path, int allow_dir) {
   struct stat st;
   if(stat(path, &st) != 0)
-    usage_error(name, "-%c %s: %s", flag, path, strerror(errno));
+    usage_error(name, "%s %s: %s", optname(flag), path, strerror(errno));
   if(S_ISDIR(st.st_mode) && !allow_dir)
-    usage_error(name, "-%c %s is a directory; a file is required", flag, path);
+    usage_error(name, "%s %s is a directory; a file is required", optname(flag), path);
   if(!S_ISDIR(st.st_mode) && !S_ISREG(st.st_mode))
-    usage_error(name, "-%c %s is not a regular file", flag, path);
+    usage_error(name, "%s %s is not a regular file", optname(flag), path);
   if(access(path, R_OK) != 0)
-    usage_error(name, "-%c %s is not readable: %s", flag, path, strerror(errno));
+    usage_error(name, "%s %s is not readable: %s", optname(flag), path, strerror(errno));
+}
+
+/* A file we will create/append: its directory must exist and be writable
+ * (or the file itself, if it exists). Used in check mode instead of opening. */
+static void opt_writable(const char *name, int flag, const char *path) {
+  if(access(path, F_OK) == 0) {
+    if(access(path, W_OK) != 0) usage_error(name, "%s %s is not writable: %s", optname(flag), path, strerror(errno));
+    return;
+  }
+  char dir[512]; safe_strncpy(dir, path, sizeof(dir));
+  char *sl = strrchr(dir, '/');
+  if(sl) { if(sl == dir) sl[1] = 0; else *sl = 0; } else safe_strncpy(dir, ".", sizeof(dir));
+  if(access(dir, W_OK) != 0) usage_error(name, "%s %s: cannot create it in %s: %s", optname(flag), path, dir, strerror(errno));
 }
 
 void print_help(char* name) {
-  fprintf(stdout,
-"\n"
-"  TCPSER %s - %s\n"
-"  Hayes Modem Emulator over TCP/IP\n"
-"  =====================================================================\n"
-"\n"
-"  Usage: %s -d <device> [options]      (real serial port)\n"
-"         %s -v <port>   [options]      (ip232 over TCP)\n"
-"\n"
-"  QUICK START\n"
-"    %s -d /dev/ttyUSB0 -s 2400 -p 6400 -k secret\n"
-"    (serial @2400 baud, listen on TCP 6400, password gate)\n"
-"\n", VERSION, EDITION, name, name, name);
-
-  fprintf(stderr,
-"  SERIAL\n"
-"    -d DEVICE         serial device                  e.g. /dev/ttyUSB0\n"
-"    -v PORT           virtual RS232 (ip232 over TCP)\n"
-"    -s SPEED          DTE / serial port speed        [38400]\n"
-"    -S SPEED          speed reported in CONNECT       [= -s]\n"
-"    -i STRING         modem init string (no AT prefix)\n"
-"    -I                invert DCD pin\n"
-"    -b LIST           on-connect caller speed menu (CBase POKE 838); LIST is\n"
-"                      speed=pokeval pairs, e.g. -b 2400=6,9600=8,38400=10\n"
-"\n"
-"  NETWORK\n"
-"    -p PORT[:MODEMS]  TCP listen port                [6400, all modems]\n"
-"                      e.g. -p 23:0,1   -p 64128:2\n"
-"    -n NUM=ADDR       phone book entry               5551212=bbs.com:23\n"
-"    -D ADDR:PORT      direct connection (: = receiver mode)\n"
-"\n");
-
-  fprintf(stderr,
-"  SECURITY / BOT GATE   (recommended for any public BBS)\n"
-"    -k PASSWORD       require password to connect\n"
-"                      (use -k env:VAR to read it from $VAR, hidden from ps)\n"
-"    -x                require BACKSPACE x2 to connect\n"
-"    -W SECONDS        gate timeout                   [20, max 300]\n"
-"    -F COUNT          fails before permanent block   [3, range 1..100]\n"
-"    -P FILE           pre-connect banner (PETSCII/ANSI)\n"
-"    -G FILE           access-granted screen\n"
-"    -E SCRIPT         run on gate success; name only, from\n"
-"                      /usr/local/tcpser/scripts/ (alphanumeric)\n"
-"\n"
-"  EVENT FILES   (sent automatically when the named event occurs)\n"
-"    -a FILE  answer  -> C64        -A FILE  answer  -> caller\n"
-"    -c FILE  connect -> C64        -C FILE  connect -> remote\n"
-"    -N FILE  no-answer -> caller   -B FILE  busy    -> caller\n"
-"    -T FILE  timeout -> caller\n"
-"\n");
-
-  fprintf(stderr,
-"  LOGGING\n"
-"    -l LEVEL          log level: 0=none 1=fatal .. 7=trace   [0]\n"
-"    -L FILE           log to file                    [stderr]\n"
-"    -t FLAGS          trace: m/M=modem s/S=serial i/I=IP\n"
-"    -O FILE           connection log (CSV, mode 0600)\n"
-"    -Y FILE           stats file (persist counters across restarts)\n"
-"\n"
-"  RECOVERY / LIMITS\n"
-"    -w SECONDS        BBS watchdog                   [120, 0=off, max 600]\n"
-"    -m MINUTES        max session time               [0=unlimited]\n"
-"\n"
-"  MONITORING / NOTIFY\n"
-"    -M                live ASCII traffic monitor (color, on stderr)\n"
-"    -H PORT           web dashboard (live stats/traffic) + /metrics (HTTP)\n"
-"                      binds 127.0.0.1; TCPSER_DASH_BIND to expose,\n"
-"                      TCPSER_DASH_TOKEN to require ?token=... auth,\n"
-"                      TCPSER_DASH_TRAFFIC=1 to show payload content\n"
-"    -e URL            webhook (Discord/Slack/ntfy/JSON POST; repeatable)\n"
-"\n"
-"  TOOLS\n"
-"    -Z                RS232 analyzer (diagnose wiring; needs -d)\n"
-"    -V                print version and exit\n"
-"    -h                this help\n"
-"\n"
-"  -d/-v repeatable for multi-line BBS; -s/-S/-i and gate settings\n"
-"  propagate to later modems.  Note: -M (monitor) differs from -t M\n"
-"  (trace modem-out).\n"
-"\n");
-
-  fprintf(stderr,
-"  EXAMPLES\n"
-"    Basic BBS:    %s -d /dev/ttyUSB0 -s 2400 -p 6400 -x\n"
-"    With gate:    %s -d /dev/ttyUSB0 -s 2400 -p 6400 -k secret\n"
-"    Dashboard:    %s -d /dev/ttyUSB0 -s 2400 -p 6400 -H 8080\n"
-"    Full logging: %s -d /dev/ttyUSB0 -s 2400 -l 7 -tsSiI -p 6400\n"
-"    Analyzer:     %s -d /dev/ttyUSB0 -s 2400 -Z\n"
-"\n", name, name, name, name, name);
+  opt_print_help(stdout, name);
   exit(0);
+}
+
+void print_config_summary(FILE *out, modem_config cfg[], int modem_count, port_config ports[], int port_count) {
+  int i;
+  fprintf(out, "\n");
+  fprintf(out, "  TCPSER %s - %s%s\n", VERSION, EDITION, g_check_mode ? "   (check: configuration is valid)" : "");
+  fprintf(out, "  ====================================\n");
+  fprintf(out, "  Ports:   %d configured\n", port_count);
+  for(i = 0; i < port_count; i++) {
+    fprintf(out, "    %s -> modems", ports[i].addr);
+    for(int j = 0; j < ports[i].modem_count; j++) fprintf(out, "%s%d", j == 0 ? " " : ",", ports[i].modem_list[j]);
+    fprintf(out, "\n");
+  }
+  fprintf(out, "  Modems:  %d\n", modem_count);
+  for(i = 0; i < modem_count; i++) {
+    const char *gate = cfg[i].gate_mode == 1 ? "BACKSPACE x2" : cfg[i].gate_mode == 2 ? "password" : "no gate";
+    fprintf(out, "    #%d: %s%s @ %d baud%s%s, %s", i,
+            cfg[i].dce_data.is_ip232 ? "ip232 :" : "", cfg[i].dce_data.tty,
+            cfg[i].dce_data.port_speed,
+            cfg[i].line_speed != cfg[i].dce_data.port_speed ? " (CONNECT says " : "",
+            cfg[i].line_speed != cfg[i].dce_data.port_speed ? ")" : "", gate);
+    if(cfg[i].direct_conn) fprintf(out, " [direct %s]", cfg[i].direct_conn_num);
+    if(cfg[i].cur_line[0]) fprintf(out, ", init AT%s", cfg[i].cur_line);
+    if(cfg[i].invert_dcd) fprintf(out, ", DCD inverted");
+    fprintf(out, "\n");
+  }
+  fprintf(out, "  DCD:     %s\n", cfg[0].force_dcd ? "always on (6551 ACIA mode)" : "follows carrier");
+  fprintf(out, "  DSR:     %s\n", cfg[0].force_dsr ? "always on" : "follows state");
+  if(cfg[0].gate_mode)
+    fprintf(out, "  Gate:    %s (%ds timeout, block after %d fails)\n",
+            cfg[0].gate_mode == 1 ? "BACKSPACE x2" : "password", cfg[0].gate_timeout, cfg[0].gate_max_fails);
+  else
+    fprintf(out, "  Gate:    disabled\n");
+  if(cfg[0].pre_connect_file[0]) fprintf(out, "  Banner:  %s\n", cfg[0].pre_connect_file);
+  if(cfg[0].access_granted_file[0]) fprintf(out, "  Granted: %s\n", cfg[0].access_granted_file);
+  if(cfg[0].on_gate_success_script[0]) fprintf(out, "  Hook:    %s/%s\n", TCPSER_SCRIPT_DIR, cfg[0].on_gate_success_script);
+  if(cfg[0].watchdog_timeout > 0) fprintf(out, "  Watch:   %ds (DTR toggle after idle disconnect)\n", cfg[0].watchdog_timeout);
+  else fprintf(out, "  Watch:   disabled\n");
+  if(cfg[0].max_session_minutes > 0) fprintf(out, "  MaxTime: %d min\n", cfg[0].max_session_minutes);
+  else fprintf(out, "  MaxTime: unlimited\n");
+  {
+    const char *sp = dashboard_get_stats_path();
+    if(sp) fprintf(out, "  Stats:   %s (auto-save every 60s)\n", sp);
+    const char *cl = connlog_get_path();
+    if(cl) fprintf(out, "  CSV:     %s\n", cl);
+    const char *lf = log_get_filename();
+    if(lf) fprintf(out, "  Log:     %s (level %d)\n", lf, log_get_level());
+    if(webhook_count() > 0) fprintf(out, "  Webhook: %d target%s\n", webhook_count(), webhook_count() == 1 ? "" : "s");
+    if(webserver_get_port() > 0)
+      fprintf(out, "  Web:     http://%s:%d/%s\n", webserver_get_bind(), webserver_get_port(), webserver_has_token() ? "  (token required)" : "");
+    const char *bl = getenv("TCPSER_BLOCKLIST");
+    fprintf(out, "  Blocks:  %s\n", bl && bl[0] ? bl : "tcpser.blocklist (working directory)");
+    if(log_get_trace_flags() & TRACE_MONITOR) fprintf(out, "  TUI:     -M terminal dashboard\n");
+  }
+  fprintf(out, "  Signals: SIGHUP=reopen log, SIGUSR1=dump stats\n");
+  fprintf(out, "  ====================================\n\n");
+}
+
+/* `tcpser help [config|markdown|man]`, `tcpser version`, `tcpser check ...`.
+ * Returns the number of leading argv words consumed (0 or 1). */
+static int subcommand(int argc, char **argv) {
+  if(argc < 2 || argv[1][0] == '-') return 0;
+  const char *w = argv[1];
+  if(!strcmp(w, "help")) {
+    const char *topic = argc > 2 ? argv[2] : "";
+    if(!strcmp(topic, "config") || !strcmp(topic, "--config")) opt_print_config_template(stdout);
+    else if(!strcmp(topic, "markdown") || !strcmp(topic, "--markdown")) opt_print_markdown(stdout);
+    else if(!strcmp(topic, "man") || !strcmp(topic, "--man")) opt_print_man(stdout);
+    else opt_print_help(stdout, argv[0]);
+    exit(0);
+  }
+  if(!strcmp(w, "version")) { printf("TCPSER %s - %s\n", VERSION, EDITION); exit(0); }
+  if(!strcmp(w, "check")) {
+    g_check_mode = 1;
+    FILE *dn = fopen("/dev/null", "w");        /* no INFO lines between the user and the verdict */
+    if(dn) log_set_file(dn);
+    return 1;
+  }
+  usage_error(argv[0], "unknown command '%s' (commands: check, help, version; or start with -d/-v/--config)", w);
+}
+
+/* Expand --config FILE (anywhere, repeatable) into the equivalent long options,
+ * keeping everything else in order, so one parser validates both sources. */
+#define ARGV_CAP 1024
+static int expand_config(int argc, char **argv, char **out) {
+  int n = 0;
+  out[n++] = argv[0];
+  for(int i = 1; i < argc; i++) {
+    const char *file = NULL;
+    if(!strcmp(argv[i], "--config") || !strcmp(argv[i], "-f")) {
+      if(i + 1 >= argc) usage_error(argv[0], "--config expects a file name");
+      file = argv[++i];
+    } else if(!strncmp(argv[i], "--config=", 9)) file = argv[i] + 9;
+    if(file) {
+      n = opt_load_config(file, out, n, ARGV_CAP, argv[0]);
+      if(n < 0) exit(EXIT_USAGE);
+      continue;
+    }
+    if(n >= ARGV_CAP - 1) usage_error(argv[0], "too many arguments");
+    out[n++] = argv[i];
+  }
+  out[n] = NULL;
+  return n;
 }
 
 int init(int argc,
@@ -181,9 +224,33 @@ int init(int argc,
   cfg[0].dce_data.port_speed = 38400;
   cfg[0].line_speed = 38400;
 
+  /* `tcpser check ...` / `help` / `version`, then --config expansion */
+  {
+    int skip = subcommand(argc, argv);
+    if(skip) { argv[skip] = argv[0]; argv += skip; argc -= skip; }
+  }
+  static char *xargv[ARGV_CAP + 1];
+  argc = expand_config(argc, argv, xargv);
+  argv = xargv;
+  int had_args = argc > 1;
+
   while(opt>-1 && i < max_modem) {
-    opt=getopt(argc, argv, "p:s:S:d:v:hw:i:Il:L:t:n:a:A:c:C:N:B:T:P:G:E:k:xD:VZF:MO:m:e:Y:W:H:b:");
+    opt = getopt_long(argc, argv, opt_short_string(), opt_long_options(), NULL);
     switch(opt) {
+      case ':':
+        usage_error(argv[0], "%s requires an argument", optopt ? optname(optopt) : argv[optind - 1]);
+        break;
+      case LO_WEB_BIND: case LO_WEB_TOKEN: case LO_NAME: case LO_IP232_BIND:
+      case LO_BLOCKLIST: case LO_ALLOWLIST: case LO_PHOSPHOR:
+        setenv(opt_by_id(opt)->env, optarg, 1);
+        break;
+      case LO_WEB_TRAFFIC: case LO_ASCII:
+        setenv(opt_by_id(opt)->env, "1", 1);
+        break;
+      case LO_CONFIG:
+        /* consumed by expand_config(); only reachable as "--config" with no file */
+        usage_error(argv[0], "--config expects a file name");
+        break;
       case 't':
         trace_flags = log_get_trace_flags();
         for(j = 0; optarg[j] != '\0'; j++) {
@@ -280,8 +347,7 @@ int init(int argc,
           if(v && v[0]) {
             safe_strncpy(cfg[i].gate_password, v, sizeof(cfg[i].gate_password));
           } else {
-            fprintf(stderr, "Error: -k env:%s but that environment variable is unset or empty\n", optarg + 4);
-            exit(1);
+            usage_error(argv[0], "-k env:%s: that environment variable is unset or empty", optarg + 4);
           }
         } else {
           /* -k "" used to enable the password gate with a password nobody can
@@ -304,7 +370,8 @@ int init(int argc,
         cfg[i].watchdog_timeout = opt_clamp(opt, opt_int(argv[0], opt, optarg), 0, 600);
         break;
       case 'O':
-        connlog_init(optarg);
+        if(g_check_mode) { opt_writable(argv[0], opt, optarg); connlog_set_path(optarg); }
+        else connlog_init(optarg);
         break;
       case 'm':
         cfg[i].max_session_minutes = opt_clamp(opt, opt_int(argv[0], opt, optarg), 0, 7 * 24 * 60);
@@ -365,10 +432,8 @@ int init(int argc,
         break;
       case 'p':
         /* Parse -p port[:modem_list] */
-        if(*port_count >= MAX_PORTS) {
-          fprintf(stderr, "Error: Maximum %d ports supported\n", MAX_PORTS);
-          exit(1);
-        }
+        if(*port_count >= MAX_PORTS)
+          usage_error(argv[0], "-p: at most %d listen ports are supported", MAX_PORTS);
         {
           port_config *pc = &ports[*port_count];
           char *colon = strchr(optarg, ':');
@@ -376,11 +441,9 @@ int init(int argc,
 
           /* Parse port number */
           if(colon) *colon = 0;
-          port_num = atoi(optarg);
-          if(port_num <= 0 || port_num > 65535) {
-            fprintf(stderr, "Error: Invalid port number %s\n", optarg);
-            exit(1);
-          }
+          port_num = opt_int(argv[0], opt, optarg);
+          if(port_num <= 0 || port_num > 65535)
+            usage_error(argv[0], "-p %d: port must be 1..65535", port_num);
 
           pc->port = port_num;
           pc->socket = -1;
@@ -417,6 +480,7 @@ int init(int argc,
         log_set_level(opt_clamp(opt, opt_int(argv[0], opt, optarg), 0, LOG_TRACE));
         break;
       case 'L':
+        if(g_check_mode) { opt_writable(argv[0], opt, optarg); log_set_filename_only(optarg); break; }
         {
           FILE *lf = fopen(optarg, "a");
           if(lf) {
@@ -441,8 +505,8 @@ int init(int argc,
           cfg[i].line_speed = cfg[i].dce_data.port_speed;
         break;
       case '?':
-        /* getopt already printed "illegal option" / "option requires an argument" */
-        usage_error(argv[0], "invalid option. Usage: %s -d <device> | -v <port> [options]", argv[0]);
+        if(optopt) usage_error(argv[0], "unknown option -%c. Usage: %s -d DEVICE | -v PORT | --config FILE [options]", optopt, argv[0]);
+        usage_error(argv[0], "unknown option %s. Usage: %s -d DEVICE | -v PORT | --config FILE [options]", argv[optind - 1], argv[0]);
         break;
       case 'h':
         print_help(argv[0]);
@@ -519,7 +583,7 @@ int init(int argc,
   if (tty_set) {
     if (i < max_modem)
       i++;
-  } else if (argc <= 1) {
+  } else if (!had_args) {
     /* Bare invocation (no arguments at all): treat like -h — show the help
      * cleanly and exit 0, instead of printing a scary FATAL error first. */
     print_help(argv[0]);              /* does not return (exit 0) */
@@ -573,6 +637,14 @@ int init(int argc,
         }
       }
     }
+  }
+
+  /* TCPSER_DASH_* may have been set by --web-bind etc. after -H */
+  if(webserver_get_port() > 0) webserver_read_env();
+
+  if(g_check_mode) {
+    print_config_summary(stdout, cfg, i, ports, *port_count);
+    exit(0);
   }
 
   LOG_EXIT();

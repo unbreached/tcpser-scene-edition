@@ -165,6 +165,24 @@
             files, -E paths, -n badentry, -t Q, -l abc were all accepted); clamps
             are printed; help goes to stdout; illegal option = usage + exit 2
   CLI:      the Web: URL is only printed after the dashboard actually bound
+  CLI:      config file + long options + check (audit phase 2D). Every option
+            now has a long name (--device, --listen, --password, --web ...)
+            and the same name works as a key in `--config FILE` (key = value,
+            [line] sections per modem, yes/no flags, env:VAR secrets, line
+            numbers in errors; `tcpser help config` prints a template).
+            Command-line flags are applied after the file. `tcpser check
+            [options]` validates everything, prints the resolved configuration
+            and exits 0/2 without opening ports or creating files. The former
+            environment-only settings have options too (--blocklist,
+            --allowlist, --web-bind, --web-token, --web-traffic, --name,
+            --ip232-bind, --phosphor, --ascii). One option table in
+            src/options.c drives getopt, -h, and the option tables in README
+            and the man page (`make docs`; `make check` fails if they drift).
+            Help now goes entirely to stdout (half of it went to stderr).
+  DEPLOY:   systemd units and the installer use /etc/tcpser/tcpser.conf
+            (template data/tcpser.conf) with `tcpser check` as ExecStartPre,
+            so a typo fails fast with a message in the journal instead of a
+            restart loop.
   TUI:      -M refuses a non-tty and runs headless; q/h/u ask y/N; q exits via
             the graceful path (NO CARRIER, stats saved, terminal restored)
   TUI:      -M rewritten on a diffed cell buffer (src/tui.c): no ESC[2J per

@@ -20,6 +20,11 @@ static FILE *connlog_open(void) {
   return f;
 }
 
+void connlog_set_path(const char *path) {
+  if(path && path[0]) safe_strncpy(g_logpath, path, sizeof(g_logpath));
+}
+const char *connlog_get_path(void) { return g_logpath[0] ? g_logpath : NULL; }
+
 void connlog_init(const char *path) {
   FILE *f;
   if(!path || !path[0]) return;

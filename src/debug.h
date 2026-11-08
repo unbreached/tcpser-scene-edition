@@ -56,6 +56,8 @@ int log_init(void);
 void log_set_file(FILE *a);
 int  log_get_fd(void);
 const char *log_get_filename(void);
+void log_set_filename_only(const char *name);
+int log_get_level(void);
 void log_reopen(void);
 void log_set_level(int a);
 int log_get_trace_flags();
