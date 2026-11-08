@@ -34,7 +34,7 @@
 - [Running as a service](#running-as-a-service) (config file, systemd, launchd)
 - [Reference](#reference) (all options, environment variables, AT commands, S-registers, logs, signals)
 - [Troubleshooting](#troubleshooting)
-- [Documentation, structure, license](#documentation)
+- [Documentation, structure, license](#documentation) — new here? read [`docs/getting-started.md`](docs/getting-started.md)
 
 ---
 
@@ -408,7 +408,7 @@ The tables below are generated from the binary (`make docs`).
 | `-k`, `--password PASSWORD` | `password` | Require a password before the modem rings. `-k env:VAR` reads it from the environment so it never shows in `ps`. |
 | `-W`, `--gate-timeout SECONDS` | `gate-timeout` | Gate timeout in seconds (default 20, max 300). |
 | `-F`, `--gate-fails COUNT` | `gate-fails` | Gate failures before the caller's IP is blocked permanently (default 3, range 1–100). |
-| `-P`, `--banner FILE|DIR` | `banner` | Pre-connect PETSCII banner; a directory rotates banners randomly. |
+| `-P`, `--banner FILE\|DIR` | `banner` | Pre-connect PETSCII banner; a directory rotates banners randomly. |
 | `-G`, `--granted FILE` | `granted` | Access-granted screen sent after the gate. |
 | `-E`, `--gate-hook NAME` | `gate-hook` | Gate-success hook: a script NAME (not a path) inside `/usr/local/tcpser/scripts/`; gets the caller IP in `TCPSER_PEER_IP`. |
 
@@ -452,7 +452,7 @@ The tables below are generated from the binary (`make docs`).
 | `--web-traffic` | `web-traffic` | Include payload content in the web traffic feed (callers' keystrokes; keep it behind a token). Also `TCPSER_DASH_TRAFFIC`. |
 | `--name NAME` | `name` | BBS name shown in the web console header. Also `TCPSER_DASH_NAME`. |
 | `-e`, `--webhook URL` | `webhook` | Webhook URL for connection events (Discord, Slack, ntfy or plain JSON POST). Repeatable, up to 8. |
-| `--phosphor green|amber|white` | `phosphor` | Terminal dashboard phosphor (`green`, `amber` or `white`). Also `TCPSER_TUI_PHOSPHOR`. |
+| `--phosphor green\|amber\|white` | `phosphor` | Terminal dashboard phosphor (`green`, `amber` or `white`). Also `TCPSER_TUI_PHOSPHOR`. |
 | `--ascii` | `ascii` | Draw the terminal dashboard with ASCII glyphs even in a UTF-8 locale. Also `TCPSER_TUI_ASCII`. |
 
 **Files**
@@ -595,13 +595,16 @@ An option failed validation. The message says which one; `tcpser -h` lists valid
 
 | | |
 |---|---|
-| [`docs/README.md`](docs/README.md) | documentation index |
+| [`docs/getting-started.md`](docs/getting-started.md) | **first call in 15 minutes**: cable, analyzer, call yourself, gate, dashboards, service (Pi and Mac) |
+| [`docs/configuration.md`](docs/configuration.md) | the config file and every option, generated from the binary |
 | [`docs/SECURITY_GUIDE.md`](docs/SECURITY_GUIDE.md) | threat model, gate, blocklist, dashboard exposure, deployment hardening |
-| [`docs/AUDIT-2026-11-01.md`](docs/AUDIT-2026-11-01.md) | full security / stability / UX audit and the redesign roadmap |
+| [`docs/security-setup.md`](docs/security-setup.md) | secure-install walkthrough and the `-E` hook sandbox |
+| [`docs/AUDIT-2026-11-01.md`](docs/AUDIT-2026-11-01.md) | full security / stability / UX audit and the redesign roadmap (status at the top) |
 | [`samples/`](samples/README.md) | systemd, launchd, nginx + TLS, fail2ban, firewall, installer, gate hooks |
 | [`c64/`](c64/README.md) | the C64-side link analyzer |
-| [`CHANGES`](CHANGES) · [`SECURITY_CHANGELOG.md`](SECURITY_CHANGELOG.md) | release notes |
+| [`CHANGES`](CHANGES) · [`docs/SECURITY_CHANGELOG.md`](docs/SECURITY_CHANGELOG.md) | release notes |
 | `man tcpser` | manual page |
+| [`docs/README.md`](docs/README.md) | documentation index |
 
 ### Project structure
 

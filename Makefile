@@ -97,7 +97,7 @@ check: tcpser
 	@sh tools/gen-docs.sh ./tcpser --check || { echo "make check: FAILED (docs out of date)"; exit 1; }
 	@python3 tests/run_tests.py ./tcpser || { echo "make check: FAILED"; exit 1; }
 
-# Option tables in README.md / man/tcpser.1 are generated from src/options.c
+# Option tables in README.md / man/tcpser.1 / docs/configuration.md are generated from src/options.c
 docs: tcpser
 	sh tools/gen-docs.sh ./tcpser
 

@@ -6,8 +6,10 @@
 #   sh tools/gen-docs.sh ./tcpser --check    exit 1 if they are out of date
 #
 # The generated text lives between marker lines:
-#   README.md:    <!-- options:begin -->  ...  <!-- options:end -->
-#   man/tcpser.1: .\" options:begin       ...  .\" options:end
+#   README.md:              <!-- options:begin -->  ...  <!-- options:end -->
+#   man/tcpser.1:           .\" options:begin       ...  .\" options:end
+#   docs/configuration.md:  options markers as above, plus
+#                           <!-- template:begin --> ... <!-- template:end -->  (tcpser help config)
 set -eu
 BIN=${1:-./tcpser}
 MODE=${2:-}
@@ -27,11 +29,15 @@ splice() {   # file begin end body   (markers via ENVIRON: awk -v would eat the 
 
 "$BIN" help markdown > "$TMP/md"
 "$BIN" help man > "$TMP/man"
+"$BIN" help config > "$TMP/conf"
 splice README.md '<!-- options:begin -->' '<!-- options:end -->' "$TMP/md" > "$TMP/README.md"
 splice man/tcpser.1 '.\" options:begin' '.\" options:end' "$TMP/man" > "$TMP/tcpser.1"
+splice docs/configuration.md '<!-- options:begin -->' '<!-- options:end -->' "$TMP/md" > "$TMP/c1.md"
+{ echo '```ini'; cat "$TMP/conf"; echo '```'; } > "$TMP/conf.md"
+splice "$TMP/c1.md" '<!-- template:begin -->' '<!-- template:end -->' "$TMP/conf.md" > "$TMP/configuration.md"
 
 rc=0
-for pair in "README.md $TMP/README.md" "man/tcpser.1 $TMP/tcpser.1"; do
+for pair in "README.md $TMP/README.md" "man/tcpser.1 $TMP/tcpser.1" "docs/configuration.md $TMP/configuration.md"; do
   set -- $pair
   if ! cmp -s "$1" "$2"; then
     if [ "$MODE" = "--check" ]; then

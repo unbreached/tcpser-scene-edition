@@ -217,6 +217,13 @@
             health_check.sh works with several PIDs and without netstat;
             legacy Makefile.solaris/.win32 removed; README documents that
             the password gate compares case-insensitively.
+  DOCS:     one reading path: docs/getting-started.md (build, try it with
+            no hardware over ip232, cable, analyzer, host, gate, dashboards,
+            service on Pi and Mac; every command run while writing it),
+            docs/configuration.md (config file, check, precedence, multi-line
+            routing, every option; generated from the binary like README and
+            the man page), docs/README.md index rewritten; SECURITY_SETUP.md
+            and SECURITY_CHANGELOG.md moved under docs/.
   DEPLOY:   systemd units and the installer use /etc/tcpser/tcpser.conf
             (template data/tcpser.conf) with `tcpser check` as ExecStartPre,
             so a typo fails fast with a message in the journal instead of a

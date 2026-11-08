@@ -1,8 +1,8 @@
 # TCPSER Security Setup Guide
 
 > Quick secure-install companion. The authoritative security reference is
-> [`docs/SECURITY_GUIDE.md`](docs/SECURITY_GUIDE.md); see
-> [`docs/README.md`](docs/README.md) for the full documentation index.
+> [`SECURITY_GUIDE.md`](SECURITY_GUIDE.md); see
+> [`README.md`](README.md) for the full documentation index.
 
 ## Secure Script Execution
 

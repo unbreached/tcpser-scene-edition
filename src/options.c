@@ -204,6 +204,8 @@ void opt_print_help(FILE *out, const char *prog) {
 
 /* ---- README table ------------------------------------------------------ */
 static const char *md_detail(const opt_desc *o) { return o->detail ? o->detail : o->help; }
+/* a '|' inside a table cell ends the cell, even inside backticks */
+static void md_cell(FILE *out, const char *s) { for(; *s; s++) { if(*s == '|') fputs("\\|", out); else fputc(*s, out); } }
 
 void opt_print_markdown(FILE *out) {
   const char *group = NULL;
@@ -219,7 +221,8 @@ void opt_print_markdown(FILE *out) {
     char flag[96];
     if(o->id <= 255) snprintf(flag, sizeof(flag), "`-%c`, `--%s%s%s`", o->id, o->name, o->has_arg ? " " : "", o->has_arg ? o->metavar : "");
     else             snprintf(flag, sizeof(flag), "`--%s%s%s`", o->name, o->has_arg ? " " : "", o->has_arg ? o->metavar : "");
-    fprintf(out, "| %s | `%s` | %s%s%s%s |\n", flag, o->name, md_detail(o), o->env ? " Also `" : "", o->env ? o->env : "", o->env ? "`." : "");
+    fputs("| ", out); md_cell(out, flag); fprintf(out, " | `%s` | ", o->name); md_cell(out, md_detail(o));
+    fprintf(out, "%s%s%s |\n", o->env ? " Also `" : "", o->env ? o->env : "", o->env ? "`." : "");
   }
 }
 
