@@ -6,6 +6,7 @@
 #include <time.h>
 #include <errno.h>
 #include <poll.h>
+#include <signal.h>
 
 #include "debug.h"
 #include "util.h"
@@ -65,7 +66,17 @@ void spawn_thread(void * thread, void *arg, char *name) {
   /* pthread_create returns an error number (>0) on failure, 0 on success —
    * never a negative value, so the old `rc < 0` test never fired and we
    * detached an uninitialized thread id. Check rc != 0. */
+  /* Worker threads inherit a mask that blocks the operator signals, so they
+   * are always delivered to the main thread (which polls the flags) and never
+   * interrupt a worker's blocking read/select: a SIGHUP from logrotate used
+   * to abort a caller's gate wait with EINTR and strike the IP. */
+  sigset_t block, old;
+  sigemptyset(&block);
+  sigaddset(&block, SIGTERM); sigaddset(&block, SIGINT); sigaddset(&block, SIGHUP);
+  sigaddset(&block, SIGUSR1); sigaddset(&block, SIGUSR2);
+  pthread_sigmask(SIG_BLOCK, &block, &old);
   rc = pthread_create(&thread_id, NULL, thread, arg);
+  pthread_sigmask(SIG_SETMASK, &old, NULL);
   if(rc != 0) {
     ELOG(LOG_FATAL, "%s thread could not be started", name);
     exit(-1);

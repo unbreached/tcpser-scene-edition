@@ -215,7 +215,7 @@ Everything below runs **before** any byte reaches the serial port.
 | Mechanism | Flag / setting | Notes |
 |-----------|----------------|-------|
 | BACKSPACE×2 gate | `-x` | accepts 0x08, 0x14 (PETSCII DEL) and 0x7F |
-| Password gate | `-k secret` or `-k env:VAR` | PETSCII/ASCII normalized, constant-time compare, guesses capped and throttled per connection; `env:` keeps it out of `ps` |
+| Password gate | `-k secret` or `-k env:VAR` | Compared case-insensitively with bit 7 stripped (so PETSCII and ASCII callers type the same thing; pick a long password, not a mixed-case one), constant-time compare, guesses capped and throttled per connection; `env:` keeps it out of `ps` |
 | Gate timeout / failures | `-W 20` · `-F 3` | after `-F` failures the IP is blocked permanently |
 | Rate limiting | built in | 5 s minimum between attempts from one IP |
 | Blocklist | `TCPSER_BLOCKLIST=/var/lib/tcpser/tcpser.blocklist` | one IPv4 per line, `#` comments, atomic append, reloaded on change |

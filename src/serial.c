@@ -142,6 +142,12 @@ int ser_init_conn(char *tty, int speed) {
       ELOG(LOG_FATAL, "TTY %s could not be opened", tty); 
     } else {
       LOG(LOG_INFO, "Opened serial device %s at speed %d as fd %d", tty, speed, fd);
+#ifdef TIOCEXCL
+      /* exclusive: a second program (minicom, a stray getty) opening the same
+       * port would otherwise silently steal bytes from the BBS */
+      if(ioctl(fd, TIOCEXCL) != 0 && errno != ENOTTY)
+        LOG(LOG_WARN, "Could not get exclusive access to %s: %s", tty, strerror(errno));
+#endif
 
       // Start from the kernel's current settings to avoid undefined flags.
       // This improves compatibility with a wide range of USB/RS232 adapters.
@@ -165,8 +171,12 @@ int ser_init_conn(char *tty, int speed) {
 
       // Ignore break on input.
       tio.c_iflag |= IGNBRK;
-      cfsetispeed(&tio, bps_rate);
-      cfsetospeed(&tio, bps_rate);
+      if(cfsetispeed(&tio, bps_rate) != 0 || cfsetospeed(&tio, bps_rate) != 0) {
+        ELOG(LOG_FATAL, "Speed %d is not supported by this driver", speed);
+        close(fd);
+        LOG_EXIT();
+        return -1;
+      }
 
       tio.c_cc[VMIN] = 1;
       tio.c_cc[VTIME] = 0;

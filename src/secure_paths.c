@@ -23,14 +23,17 @@
 int contains_path_traversal(const char *path) {
     if (!path) return 1;
 
-    /* Check for obvious traversal patterns */
-    if (strstr(path, "..") ||       /* Parent directory */
-        strstr(path, "//") ||       /* Double slash */
-        strstr(path, "./") ||       /* Current directory prefix */
-        strstr(path, "/.") ||       /* Current/parent directory */
-        strstr(path, "~")) {        /* Home directory expansion */
+    /* Traversal patterns. Only whole "." / ".." segments are rejected: the
+     * old "/." test refused every dotfile directory, so
+     * TCPSER_BLOCKLIST=/home/pi/.tcpser/blocklist was silently ignored. */
+    if (strstr(path, "..") ||       /* parent directory, anywhere */
+        strstr(path, "//") ||       /* double slash */
+        strstr(path, "/./") ||      /* "." segment */
+        strncmp(path, "./", 2) == 0 ||
+        strstr(path, "~")) {        /* home directory expansion */
         return 1;
     }
+    { size_t n = strlen(path); if (n >= 2 && strcmp(path + n - 2, "/.") == 0) return 1; }
 
     /* Check for encoded traversal attempts */
     if (strstr(path, "%2e") ||      /* URL encoded dots */

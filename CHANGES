@@ -197,6 +197,26 @@
              never incremented); it now reads the dashboard counters, which
              count even without -M/-H. The "gate failed" log line (fail2ban
              key) lost the caller IP in some paths; fixed.
+  FIXES:    audit Low/Info sweep. Worker threads block SIGTERM/INT/HUP/USR1
+            and the gate retries on EINTR, so a logrotate SIGHUP can no
+            longer fail a caller's gate wait and strike their IP; sigaction
+            instead of signal(); shutdown closed stdin (dead sSocket=0);
+            -T inactivity screen was parsed but never sent; AT command lines
+            are sanitized before logging (ANSI injection from the modem
+            side); TCPSER_BLOCKLIST under a dotfile directory (~/.tcpser/)
+            was refused by the traversal check; blocklist path buffer is
+            thread-local; getaddrinfo replaces gethostbyname/strtok in
+            ip_connect, and server address parsing no longer truncates the
+            caller's string; serial port opened exclusive (TIOCEXCL) and
+            cfsetspeed failures are reported; no BREAK on an ip232 socket;
+            HSTS header dropped from plain-HTTP responses (nginx adds it over
+            TLS); make uninstall keeps operator data (CSV, blocklist, conf)
+            instead of rm -rf; data/tcpser.blocklist no longer ships three
+            real addresses; launchd plist uses the config file and a
+            separate launchd log (two writers on one file before);
+            health_check.sh works with several PIDs and without netstat;
+            legacy Makefile.solaris/.win32 removed; README documents that
+            the password gate compares case-insensitively.
   DEPLOY:   systemd units and the installer use /etc/tcpser/tcpser.conf
             (template data/tcpser.conf) with `tcpser check` as ExecStartPre,
             so a typo fails fast with a message in the journal instead of a

@@ -1,3 +1,5 @@
-5.150.254.13
-79.127.147.92
-23.31.96.97
+# tcpser persistent IP blocklist - one IPv4 address per line, # = comment.
+# tcpser appends here when a caller exceeds the gate-failure limit (-F).
+# Keep it under a directory the service can write (TCPSER_BLOCKLIST or
+# blocklist = ... in tcpser.conf); the default is tcpser.blocklist in the
+# working directory.

@@ -237,7 +237,6 @@ void send_http_response_safe(int fd, int status_code, const char *content_type,
         "X-Content-Type-Options: nosniff\r\n"
         "X-Frame-Options: DENY\r\n"
         "X-XSS-Protection: 1; mode=block\r\n"
-        "Strict-Transport-Security: max-age=31536000; includeSubDomains\r\n"
         "Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'\r\n"
         /* No Access-Control-Allow-Origin: the bundled UI is same-origin. A
          * wildcard let any web page the operator visited read /api/status

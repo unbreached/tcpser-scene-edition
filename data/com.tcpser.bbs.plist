@@ -6,22 +6,14 @@
   <key>Label</key>
   <string>com.tcpser.bbs</string>
 
+  <!-- All options live in /usr/local/etc/tcpser/tcpser.conf (template:
+       /usr/local/share/tcpser/tcpser.conf, or `tcpser help config`).
+       Validate after editing: tcpser check (same --config). -->
   <key>ProgramArguments</key>
   <array>
     <string>/usr/local/bin/tcpser</string>
-    <string>-d</string>
-    <string>/dev/ttyUSB0</string>
-    <string>-s</string>
-    <string>2400</string>
-    <string>-p</string>
-    <string>6400</string>
-    <string>-l</string>
-    <string>4</string>
-    <string>-x</string>
-    <string>-O</string>
-    <string>/usr/local/share/tcpser/connections.csv</string>
-    <string>-L</string>
-    <string>/var/log/tcpser.log</string>
+    <string>--config</string>
+    <string>/usr/local/etc/tcpser/tcpser.conf</string>
   </array>
 
   <key>WorkingDirectory</key>
@@ -37,11 +29,14 @@
   <key>ThrottleInterval</key>
   <integer>5</integer>
 
+  <!-- tcpser writes its own log (log-file = ... in tcpser.conf); launchd only
+       captures the startup banner and crashes here, so the two never
+       interleave in one file. -->
   <key>StandardOutPath</key>
-  <string>/var/log/tcpser.log</string>
+  <string>/var/log/tcpser-launchd.log</string>
 
   <key>StandardErrorPath</key>
-  <string>/var/log/tcpser.log</string>
+  <string>/var/log/tcpser-launchd.log</string>
 
   <!--
     INSTALL:
@@ -52,12 +47,14 @@
       sudo launchctl unload /Library/LaunchDaemons/com.tcpser.bbs.plist
       sudo rm /Library/LaunchDaemons/com.tcpser.bbs.plist
 
-    EDIT the ProgramArguments above to match your setup:
-      - Serial device (-d /dev/ttyUSB0 or /dev/cu.usbserial-*)
-      - Baud rate (-s 2400)
-      - Listen port (-p 6400)
-      - Gate mode (-x for backspace, -k password for password)
-      - Banner file (-P /path/to/banner.seq)
+    SETUP:
+      sudo mkdir -p /usr/local/etc/tcpser
+      sudo cp /usr/local/share/tcpser/tcpser.conf /usr/local/etc/tcpser/
+      edit it (device = /dev/cu.usbserial-*, speed, listen, gate, log-file,
+      blocklist under a writable directory), then:
+      tcpser check --config /usr/local/etc/tcpser/tcpser.conf
+    Runs as root by default; for an unprivileged run add UserName/GroupName
+    with a user in the dialout-equivalent group for the serial device.
   -->
 </dict>
 </plist>

@@ -71,10 +71,14 @@ install: tcpser
 	@echo "  sudo cp $(DATADIR)/tcpser.service /etc/systemd/system/ && sudo systemctl enable --now tcpser"
 	@echo "macOS:  sudo cp $(DATADIR)/com.tcpser.bbs.plist /Library/LaunchDaemons/  (edit paths first)"
 
+# Removes what install put there; leaves operator data (connections.csv,
+# an appended blocklist, stats) and anything else in the data dir alone.
 uninstall:
 	rm -f $(DESTDIR)$(BINDIR)/tcpser
 	rm -f $(DESTDIR)$(MANDIR)/tcpser.1
-	rm -rf $(DESTDIR)$(DATADIR)
+	rm -f $(DESTDIR)$(DATADIR)/*.seq $(DESTDIR)$(DATADIR)/com.tcpser.bbs.plist \
+	      $(DESTDIR)$(DATADIR)/tcpser.service $(DESTDIR)$(DATADIR)/tcpser.conf
+	-rmdir $(DESTDIR)$(DATADIR) 2>/dev/null || echo "left $(DESTDIR)$(DATADIR) (contains operator data)"
 
 depend:
 	@echo "Header dependencies are tracked automatically (-MMD); nothing to do."

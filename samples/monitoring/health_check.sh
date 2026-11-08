@@ -2,7 +2,7 @@
 # TCPSER Health Check Script
 # Use with cron, monitoring systems, or manually
 
-set -e
+set -u   # not -e: a failed check must set a flag, not abort the script
 
 # Configuration
 TCPSER_PORT=6400
@@ -30,8 +30,8 @@ echo "================================"
 # Check if TCPSER process is running
 if pgrep -x "tcpser" > /dev/null; then
     echo -e "${GREEN}✓${NC} TCPSER process is running"
-    PID=$(pgrep -x "tcpser")
-    echo "  PID: $PID"
+    PID=$(pgrep -x "tcpser" | head -n 1)     # several instances: report the first
+    echo "  PID(s): $(pgrep -x tcpser | tr '\n' ' ')"
 
     # Check memory usage
     MEM_USAGE=$(ps -o pid,vsz,rss,pmem -p "$PID" | tail -n 1)
@@ -44,14 +44,20 @@ fi
 # Check if ports are listening
 echo
 echo "Port Status:"
-if netstat -tlnp 2>/dev/null | grep -q ":$TCPSER_PORT "; then
+# listening ports: ss (Linux), netstat, or lsof (macOS) - whichever exists
+listening() {
+    if command -v ss >/dev/null; then ss -tln 2>/dev/null | grep -q ":$1 "
+    elif command -v netstat >/dev/null; then netstat -tln 2>/dev/null | grep -q "[.:]$1 "
+    else lsof -nP -iTCP:"$1" -sTCP:LISTEN >/dev/null 2>&1; fi
+}
+if listening "$TCPSER_PORT"; then
     echo -e "${GREEN}✓${NC} Port $TCPSER_PORT (modem) is listening"
 else
     echo -e "${RED}✗${NC} Port $TCPSER_PORT (modem) is NOT listening"
     CRITICAL=1
 fi
 
-if netstat -tlnp 2>/dev/null | grep -q ":$WEB_PORT "; then
+if listening "$WEB_PORT"; then
     echo -e "${GREEN}✓${NC} Port $WEB_PORT (web) is listening"
 else
     echo -e "${YELLOW}⚠${NC} Port $WEB_PORT (web) is NOT listening"

@@ -4,38 +4,38 @@
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <unistd.h>       // for read...
-#include <stdlib.h>       // for atoi...
+#include <stdlib.h>
+#include <string.h>       // for atoi...
 #include <errno.h>
 #include <netinet/tcp.h>
 
 #include "debug.h"
 #include "ip.h"
+#include "phone_book.h"
 
 const int BACK_LOG = 5;
 
 int ip_init_server_conn(char *ip, int port) {
-  char *ip_addr = NULL;
   int sSocket = 0, on = 0, rc = 0;
   struct sockaddr_in serverName = { 0 };
-  char * tmp;
 
   LOG_ENTER();
 
   // Handle special case ":<port>"
   // Without it, ip_add will be set to port and port will be null
 
+  /* parse "[addr]:port" on a private copy: the old strtok() wrote NULs into
+   * the caller's string, truncating the address shown in the startup banner */
+  char spec[128]; char *ip_addr = NULL;
   if(ip != NULL) {
-    if(ip[0] == ':') {
-      ip = &ip[1];
-    }
-    if (strchr(ip, ':') != NULL) {
-      ip_addr = strtok(ip, ":");
-      tmp = strtok(NULL,":");
-      if(tmp != NULL && strlen(tmp) > 0) {
-        port = (atoi(tmp));
-      }
-    } else if(strlen(ip) > 0) {
-      port = (atoi(ip));
+    snprintf(spec, sizeof(spec), "%s", ip[0] == ':' ? ip + 1 : ip);
+    char *colon = strchr(spec, ':');
+    if(colon) {
+      *colon = 0;
+      if(colon[1]) port = atoi(colon + 1);
+      if(spec[0]) ip_addr = spec;
+    } else if(spec[0]) {
+      port = atoi(spec);
     }
   }
 
@@ -104,44 +104,42 @@ int ip_init_server_conn(char *ip, int port) {
 
 int ip_connect(char *ip) {
   struct sockaddr_in pin;
-  struct in_addr cin_addr;
-  struct hostent *hp;
   int sd = 0;
   int port = 23;
-  char *address;
-  char *tmp;
+  char spec[PH_ENTRY_SIZE > 256 ? PH_ENTRY_SIZE : 256];
+  char portstr[8];
 
   LOG_ENTER();
-  address = strtok(ip, ":");
-  /* strtok() returns NULL for a NULL, empty, or colon-only address (e.g. the
-   * dial string "ATD:" or an empty phone-book entry). Passing that NULL on to
-   * gethostbyname()/inet_aton() dereferences it and crashes, so bail early. */
-  if(address == NULL) {
+  /* "host[:port]" on a private copy (no strtok: it is not reentrant and it
+   * mutates the caller's phone-book entry) */
+  if(!ip) { LOG(LOG_ERROR, "No host address to connect to"); return -1; }
+  snprintf(spec, sizeof(spec), "%s", ip);
+  char *colon = strchr(spec, ':');
+  if(colon) { *colon = 0; if(colon[1]) port = atoi(colon + 1); }
+  if(!spec[0]) {
+    /* the dial string "ATD:" or an empty phone-book entry */
     LOG(LOG_ERROR, "No host address to connect to");
     return -1;
   }
-  tmp = strtok(NULL, ":");
-  if(tmp != NULL && strlen(tmp) > 0) {
-    port = atoi(tmp);
-  }
+  if(port <= 0 || port > 65535) { LOG(LOG_ERROR, "Port out of range in %s", ip); return -1; }
 
   LOG(LOG_DEBUG, "Calling %s", ip);
   memset(&pin, 0, sizeof(pin));
 
-  /* go find out about the desired host machine */
-  if((hp = gethostbyname(address)) == 0) {
-    // well, not a DNS entry... Treat as IP...
-    if(1 != inet_aton(address, &cin_addr)) {
-      ELOG(LOG_ERROR, "Host %s was invalid", ip);
-      return -1;
-    }
-  } else {
-    cin_addr = *((struct in_addr *)(hp->h_addr));
+  /* getaddrinfo: thread-safe (gethostbyname shares one static result between
+   * threads) and handles dotted quads and names alike */
+  struct addrinfo hints, *res = NULL;
+  memset(&hints, 0, sizeof(hints));
+  hints.ai_family = AF_INET;          /* the line/ip232 code is IPv4 */
+  hints.ai_socktype = SOCK_STREAM;
+  snprintf(portstr, sizeof(portstr), "%d", port);
+  int gai = getaddrinfo(spec, portstr, &hints, &res);
+  if(gai != 0 || !res) {
+    LOG(LOG_ERROR, "Host %s was invalid: %s", spec, gai_strerror(gai));
+    return -1;
   }
-
-  pin.sin_family = AF_INET;
-  pin.sin_addr.s_addr = cin_addr.s_addr;
-  pin.sin_port = htons(port);
+  memcpy(&pin, res->ai_addr, sizeof(pin));
+  freeaddrinfo(res);
 
   /* grab an Internet domain socket */
   if ((sd = socket(AF_INET, SOCK_STREAM, 0)) == -1) {

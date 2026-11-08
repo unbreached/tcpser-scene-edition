@@ -6,6 +6,7 @@
 #include "getcmd.h"
 #include "debug.h"
 #include "modem_core.h"
+#include "util.h"
 #include "version.h"
 #include "connlog.h"
 
@@ -478,7 +479,13 @@ int mdm_parse_cmd(modem_config* cfg) {
   char tmp[256];
 
   LOG_ENTER();
-  LOG(LOG_DEBUG, "Evaluating AT%s", command);
+  if(log_level >= LOG_DEBUG) {
+    char vis[1030]; size_t vi = 0;
+    for(const char *q = command; *q && vi < sizeof(vis) - 1; q++)
+      vis[vi++] = (*q >= 0x20 && *q < 0x7f) ? *q : '.';     /* no ANSI/log injection from the modem side */
+    vis[vi] = 0;
+    LOG(LOG_DEBUG, "Evaluating AT%s", vis);
+  }
 
   while(TRUE != done ) {
     if(cmd != AT_CMD_ERR) {
@@ -892,6 +899,9 @@ int mdm_handle_timeout(modem_config *cfg) {
   } else if(cfg->s[S_REG_INACTIVITY_TIME] != 0) {
     // timeout...
     LOG(LOG_INFO, "DTE communication inactivity timeout");
+    /* -T screen: was parsed and documented but never sent */
+    if(cfg->inactive[0] && cfg->line_data.is_connected && cfg->line_data.fd >= 0)
+      writeFile(cfg->inactive, cfg->line_data.fd);
     mdm_disconnect(cfg, FALSE);
   }
   return 0;

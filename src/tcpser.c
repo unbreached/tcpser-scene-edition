@@ -45,6 +45,19 @@ static void handle_sigusr1(int sig) {
   g_sigusr1 = 1;
 }
 
+/* sigaction instead of signal(): defined semantics everywhere, and NO
+ * SA_RESTART so the main select() wakes promptly on SIGTERM/HUP/USR1. Worker
+ * threads block these signals (spawn_thread), so their blocking I/O is never
+ * interrupted and the gate cannot mistake EINTR for a timeout. */
+static void install_handler(int sig, void (*fn)(int)) {
+  struct sigaction sa;
+  memset(&sa, 0, sizeof(sa));
+  sa.sa_handler = fn;
+  sigemptyset(&sa.sa_mask);
+  sa.sa_flags = 0;
+  sigaction(sig, &sa, NULL);
+}
+
 static void dump_stats(int modem_count) {
   time_t now = time(NULL);
   long uptime = (long)(now - g_start_time);
@@ -78,7 +91,6 @@ int main(int argc, char *argv[]) {
   char all_busy[255] = {0};   /* read via strlen() later; was uninitialised when -B absent */
   int i;
   int rc = 0;
-  int sSocket = 0;
   fd_set readfs;
   int max_fd = 0;
   int accept_pending = FALSE;
@@ -96,13 +108,13 @@ int main(int argc, char *argv[]) {
 
   pb_init();
   
-  signal(SIGIO, SIG_IGN);    /* Some Linux variant term on SIGIO by default */
-  signal(SIGPIPE, SIG_IGN);  /* Avoid process termination on broken pipes */
-  signal(SIGCHLD, SIG_IGN);  /* Auto-reap forked children (gate scripts) */
-  signal(SIGTERM, handle_shutdown);
-  signal(SIGINT, handle_shutdown);
-  signal(SIGHUP, handle_sighup);   /* Reopen log file (for logrotate) */
-  signal(SIGUSR1, handle_sigusr1); /* Dump statistics */
+  install_handler(SIGIO, SIG_IGN);    /* Some Linux variant term on SIGIO by default */
+  install_handler(SIGPIPE, SIG_IGN);  /* Avoid process termination on broken pipes */
+  install_handler(SIGCHLD, SIG_IGN);  /* Auto-reap spawned children (gate scripts, curl) */
+  install_handler(SIGTERM, handle_shutdown);
+  install_handler(SIGINT, handle_shutdown);
+  install_handler(SIGHUP, handle_sighup);   /* Reopen log file (for logrotate) */
+  install_handler(SIGUSR1, handle_sigusr1); /* Dump statistics */
 
   g_start_time = time(NULL);
 
@@ -301,7 +313,6 @@ int main(int argc, char *argv[]) {
     term_restore();
     fprintf(stderr, "\033[?25h\033[0m\n");
   }
-  if(sSocket > -1) close(sSocket);
   LOG_EXIT();
   return 0;
 }

@@ -428,8 +428,12 @@ def t_webhook():
             assert b"GATE_FAIL" in body and b"127.0.0.1" in body, body[:200]
         # SIGUSR1: the stats dump must reflect the gate failure, not zeros
         srv.p.send_signal(_signal.SIGUSR1)
-        time.sleep(0.8)
-        err = srv.stderr()
+        # sanitizer builds deliver the signal at the next select() wake-up (2 s), so poll
+        end = time.time() + 6
+        err = b""
+        while time.time() < end and b"Gate failed:" not in err:
+            time.sleep(0.2)
+            err = srv.stderr()
         assert b"Gate failed:  1" in err, err[-600:]
         v.close()
     finally:

@@ -78,7 +78,7 @@ static const char* allowlist_path(void) {
   const char *env_path = getenv("TCPSER_ALLOWLIST");
   if (env_path && env_path[0]) {
     /* Validate environment path */
-    static char safe_path[512];
+    static __thread char safe_path[512];   /* thread-local: called from several threads */
     if (validate_file_path(env_path, safe_path, sizeof(safe_path)) == 0) {
       return safe_path;
     }
@@ -153,7 +153,7 @@ static const char* blocklist_path(void) {
   const char *env_path = getenv("TCPSER_BLOCKLIST");
   if (env_path && env_path[0]) {
     /* Validate environment path */
-    static char safe_path[512];
+    static __thread char safe_path[512];   /* thread-local: called from several threads */
     if (validate_file_path(env_path, safe_path, sizeof(safe_path)) == 0) {
       return safe_path;
     }
@@ -685,6 +685,7 @@ static int preconnect_gate(modem_config *cfg) {
     tv.tv_usec = 0;
 
     int rc = select(fd + 1, &readfs, NULL, NULL, &tv);
+    if(rc < 0 && errno == EINTR) continue;   /* a signal is not a timeout */
     if(rc <= 0) break; // timeout or error
     if(!FD_ISSET(fd, &readfs)) continue;
 
@@ -819,6 +820,7 @@ static void baud_select_menu(modem_config *cfg) {
     tv.tv_usec = 0;
 
     int rc = select(fd + 1, &readfs, NULL, NULL, &tv);
+    if(rc < 0 && errno == EINTR) continue;   /* a signal is not a timeout */
     if(rc <= 0) break;
     if(!FD_ISSET(fd, &readfs)) continue;
 
@@ -1557,7 +1559,7 @@ void *bridge_task(void *arg) {
            * forever (audit STAB-M5). The watchdog re-arms on the next
            * disconnect; the operator sees the give-up on both dashboards. */
           LOG(LOG_ERROR, "BBS watchdog: 3 DTR toggles failed, sending BREAK and giving up until the next call");
-          tcsendbreak(cfg->dce_data.fd, 0);
+          if(!cfg->dce_data.is_ip232) tcsendbreak(cfg->dce_data.fd, 0);   /* no BREAK on a TCP socket */
           dashboard_note("line %d: BBS silent for %lds after disconnect; DTR x3 + BREAK sent, watchdog off",
                          cfg->idx, (long)(cfg->watchdog_timeout * 3));
           watchdog_dtr_attempts = 0;
