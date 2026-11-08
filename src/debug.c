@@ -2,6 +2,7 @@
 #include <time.h>
 #include <pthread.h>
 #include <stdio.h>
+#include <stdarg.h>
 #include <unistd.h>
 #define DEBUG_VARS 1      // need this so we don't get extern defs
 #include "debug.h"
@@ -53,6 +54,17 @@ int log_init() {
 
 void log_set_file(FILE *a) {
   log_file = a;
+}
+
+void log_capture(int level, const char *fmt, ...) {
+  if(!dashboard_capture_active()) return;
+  char text[96];
+  va_list ap; va_start(ap, fmt);
+  vsnprintf(text, sizeof(text), fmt, ap);
+  va_end(ap);
+  /* strip a trailing newline, flatten control characters */
+  for(char *p = text; *p; p++) if((unsigned char)*p < 0x20) *p = ' ';
+  dashboard_note("%s: %s", level <= LOG_FATAL ? "FATAL" : level == LOG_ERROR ? "ERROR" : "WARN", text);
 }
 
 /* Raw descriptor of the log stream, for code that must not touch stdio or the

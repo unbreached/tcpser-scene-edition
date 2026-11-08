@@ -243,16 +243,17 @@ int main(int argc, char *argv[]) {
     LOG(LOG_ALL, "Waiting for incoming connections and/or indicators");
     {
       struct timeval tv;
-      tv.tv_sec = 2;
-      tv.tv_usec = 0;
+      int tui = (log_get_trace_flags() & TRACE_MONITOR) != 0;
+      tv.tv_sec = tui ? 0 : 2;          /* the diffed TUI is cheap to refresh: 4x/s for a live clock */
+      tv.tv_usec = tui ? 250000 : 0;
       rc = select(max_fd+1, &readfs, NULL, NULL, &tv);
-      /* Always check keyboard and signals, even during active traffic */
+      /* Always check keyboard, resize and signals, even during active traffic */
       if(g_sighup) { g_sighup = 0; log_reopen(); LOG(LOG_INFO, "Log file reopened (SIGHUP)"); }
       if(g_sigusr1) { g_sigusr1 = 0; dump_stats(modem_count); }
+      dashboard_check_winch();    /* repaint on terminal resize (was only on idle ticks) */
       dashboard_check_keyboard(); /* process interactive keys */
       if(rc == 0) {
-        dashboard_check_winch(); /* re-render on terminal resize */
-        dashboard_render(); /* periodic refresh (uptime, LEDs, etc.) */
+        dashboard_render();   /* periodic refresh (clock, durations) */
         dashboard_autosave(); /* save stats every 60s */
         continue;
       }

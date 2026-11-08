@@ -167,6 +167,20 @@
   CLI:      the Web: URL is only printed after the dashboard actually bound
   TUI:      -M refuses a non-tty and runs headless; q/h/u ask y/N; q exits via
             the graceful path (NO CARRIER, stats saved, terminal restored)
+  TUI:      -M rewritten on a diffed cell buffer (src/tui.c): no ESC[2J per
+            refresh, no flicker, only changed cells are sent; stderr is
+            non-blocking with a bounded output queue, so a frozen SSH session
+            delays the picture instead of stalling the accept loop. Same 5250
+            idiom as the web console: system line, status strip, LINES subfile
+            with per-line rows (device, speed, carrier, caller, duration,
+            bytes, DCD/DTR), traffic with hex + text, recent callers, EVENTS
+            pane fed by the log's warnings/errors, blocklist and help pages,
+            hotkey row. Adaptive layout from 60x16 up, panes dropped bottom-up
+            when short; SIGWINCH handled every loop. Colour tiers 256/16/mono
+            from TERM/COLORTERM/NO_COLOR, ASCII glyphs outside UTF-8 or with
+            TCPSER_TUI_ASCII=1, phosphor green/amber/white (P key or
+            TCPSER_TUI_PHOSPHOR). Previous version hard-coded 80 columns and
+            repainted the whole screen on every byte of traffic.
   DEPLOY:   systemd units rewritten (the hardened sample used -w 8080 for the
             dashboard, sent the IP blocklist to callers as the busy screen with
             -B, and gave -E a directory); run unprivileged with StateDirectory/

@@ -1,7 +1,7 @@
 .DEFAULT_GOAL := all
 SRC=src
-SRCS = $(SRC)/bridge.c $(SRC)/debug.c $(SRC)/getcmd.c $(SRC)/ip.c $(SRC)/init.c $(SRC)/modem_core.c $(SRC)/nvt.c $(SRC)/serial.c $(SRC)/ip232.c $(SRC)/util.c $(SRC)/phone_book.c $(SRC)/tcpser.c $(SRC)/line.c $(SRC)/dce.c $(SRC)/analyzer.c $(SRC)/dashboard.c $(SRC)/connlog.c $(SRC)/webhook.c $(SRC)/webserver.c $(SRC)/secure_script.c $(SRC)/secure_paths.c $(SRC)/secure_http.c $(SRC)/web_assets.c
-OBJS = $(SRC)/bridge.o $(SRC)/debug.o $(SRC)/getcmd.o $(SRC)/ip.o $(SRC)/init.o $(SRC)/modem_core.o $(SRC)/nvt.o $(SRC)/serial.o $(SRC)/ip232.o $(SRC)/util.o $(SRC)/phone_book.o $(SRC)/tcpser.o $(SRC)/dce.o $(SRC)/line.o $(SRC)/analyzer.o $(SRC)/dashboard.o $(SRC)/connlog.o $(SRC)/webhook.o $(SRC)/webserver.o $(SRC)/secure_script.o $(SRC)/secure_paths.o $(SRC)/secure_http.o $(SRC)/web_assets.o
+SRCS = $(SRC)/bridge.c $(SRC)/debug.c $(SRC)/getcmd.c $(SRC)/ip.c $(SRC)/init.c $(SRC)/modem_core.c $(SRC)/nvt.c $(SRC)/serial.c $(SRC)/ip232.c $(SRC)/util.c $(SRC)/phone_book.c $(SRC)/tcpser.c $(SRC)/line.c $(SRC)/dce.c $(SRC)/analyzer.c $(SRC)/dashboard.c $(SRC)/connlog.c $(SRC)/webhook.c $(SRC)/webserver.c $(SRC)/secure_script.c $(SRC)/secure_paths.c $(SRC)/secure_http.c $(SRC)/web_assets.c $(SRC)/tui.c
+OBJS = $(SRC)/bridge.o $(SRC)/debug.o $(SRC)/getcmd.o $(SRC)/ip.o $(SRC)/init.o $(SRC)/modem_core.o $(SRC)/nvt.o $(SRC)/serial.o $(SRC)/ip232.o $(SRC)/util.o $(SRC)/phone_book.o $(SRC)/tcpser.o $(SRC)/dce.o $(SRC)/line.o $(SRC)/analyzer.o $(SRC)/dashboard.o $(SRC)/connlog.o $(SRC)/webhook.o $(SRC)/webserver.o $(SRC)/secure_script.o $(SRC)/secure_paths.o $(SRC)/secure_http.o $(SRC)/web_assets.o $(SRC)/tui.o
 
 # Web dashboard static files live in src/web/ and are embedded into the binary
 # at build time (POSIX sh + od, no extra tools). Edit the files there, not the

@@ -37,6 +37,7 @@
                            fprintf(log_file,args); \
                            log_end(); \
                          } \
+                         if(a <= LOG_WARN) log_capture(a, args); \
                        } while(0)
 
 #define ELOG(a,args...) do { \
@@ -46,6 +47,7 @@
                            fprintf(log_file," (%s)\n",strerror(errno)); \
                            log_end(); \
                          } \
+                         if(a <= LOG_WARN) log_capture(a, args); \
                        } while(0)
 
 #define LOG_ENTER() LOG(LOG_ENTER_EXIT,"Entering %s function",__func__);
@@ -62,6 +64,9 @@ void log_trace(int type, unsigned char *line, int len);
 void log_monitor(int type, unsigned char *data, int len);
 void log_start(int level);
 void log_end();
+/* Mirror WARN/ERROR/FATAL messages into the dashboard events pane (regardless
+ * of -l), so problems are visible while -M owns the screen. */
+void log_capture(int level, const char *fmt, ...);
 
 #endif
 #ifndef DEBUG_VARS

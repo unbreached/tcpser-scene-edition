@@ -22,6 +22,9 @@
 #include <unistd.h>
 
 #include "dashboard.h"
+#include "tui.h"
+#include <sys/time.h>
+
 #include "version.h"
 #include "modem_core.h"
 #include "bridge.h"
@@ -30,75 +33,16 @@
 dashboard_state_t g_dash;
 static pthread_mutex_t dash_mutex = PTHREAD_MUTEX_INITIALIZER;
 static struct termios g_orig_term;
-static int g_dash_paused = 0;  /* pause auto-render while showing overlay */
 static int g_term_raw = 0;
-static char g_stats_path[512] = {0};
-static time_t g_last_autosave = 0;
-#define AUTOSAVE_INTERVAL 60  /* seconds */
 
-/* ANSI */
-#define E       "\033["
-#define RST     E "0m"
-#define BOLD    E "1m"
-#define DIM     E "2m"
-
-/* --- Cyberpunk neon palette (xterm-256) ---------------------------------
- * The dashboard names its colours semantically (C_LCYN = header, C_LMAG =
- * primary accent, C_LYEL = stats, C_LGRN = live/online, C_GRY = grid/borders).
- * We remap those names to a cohesive neon set — hot magenta, electric cyan,
- * acid green, neon amber — over a muted blue-violet grid. Layout is driven by
- * cursor positioning, so only the look changes, not the geometry.
- * Falls back gracefully: any 256-colour-capable terminal (all modern ones)
- * renders these; the SGR reset (RST) restores default. */
-#define N(n)    E "38;5;" #n "m"
-#define C_RED   N(197)   /* neon red/pink   */
-#define C_GRN   N(41)    /* neon green      */
-#define C_YEL   N(178)   /* amber           */
-#define C_BLU   N(63)    /* electric blue   */
-#define C_MAG   N(164)   /* magenta         */
-#define C_CYN   N(44)    /* deep cyan       */
-#define C_WHT   N(255)   /* near-white      */
-#define C_GRY   N(60)    /* muted grid line */
-#define C_LRED  N(203)   /* coral           */
-#define C_LGRN  N(48)    /* acid green      */
-#define C_LYEL  N(220)   /* neon gold       */
-#define C_LBLU  N(75)    /* sky neon        */
-#define C_LMAG  N(198)   /* hot neon pink   */
-#define C_LCYN  N(51)    /* electric cyan   */
-#define CLR     E "2J" E "H"
-#define CHIDE   E "?25l"
-#define CSHOW   E "?25h"
-
-#define TL "\xe2\x95\xad"
-#define TR "\xe2\x95\xae"
-#define BL "\xe2\x95\xb0"
-#define BR "\xe2\x95\xaf"
-#define HZ "\xe2\x94\x80"
-#define VT "\xe2\x94\x82"
-#define BUL "\xe2\x97\x8f"  /* ● filled */
-#define BUE "\xe2\x97\x8b"  /* ○ empty */
-#define BLK "\xe2\x96\x88"  /* █ full block */
-
-static int W = 80, H = 24;
-static volatile int g_winch = 0;
-
-static void handle_winch(int sig) { (void)sig; g_winch = 1; }
-
-static void term_size(int *w, int *h) {
-  struct winsize ws;
-  if(ioctl(STDERR_FILENO, TIOCGWINSZ, &ws) == 0) {
-    if(ws.ws_col > 0) *w = ws.ws_col;
-    if(ws.ws_row > 0) *h = ws.ws_row;
-  }
-}
-
+/* interactive state (all access under dash_mutex or from the main thread) */
 static int g_quit_requested = 0;
 static char g_confirm = 0;     /* pending destructive hotkey awaiting y/N */
+static time_t g_confirm_at = 0;
+#define CONFIRM_TIMEOUT 10     /* seconds before a pending y/N prompt auto-cancels */
 static void series_call(void);
 static void series_fail(void);
 static void series_bytes(int in, int len);
-static time_t g_confirm_at = 0;
-#define CONFIRM_TIMEOUT 10     /* seconds before a pending y/N prompt auto-cancels */
 void term_restore(void);
 
 static void term_raw_on(void) {
@@ -118,436 +62,316 @@ static void term_raw_on(void) {
   t.c_cc[VMIN] = 0; t.c_cc[VTIME] = 0;
   tcsetattr(STDIN_FILENO, TCSANOW, &t);
   g_term_raw = 1;
+  tui_init();
 }
 
 void term_restore(void) {
   if(g_term_raw) {
+    tui_shutdown();
     tcsetattr(STDIN_FILENO, TCSANOW, &g_orig_term);
     g_term_raw = 0;
   }
 }
+static char g_stats_path[512] = {0};
+static time_t g_last_autosave = 0;
+#define AUTOSAVE_INTERVAL 60  /* seconds */
 
-/* Drawing helpers */
-static void hr(FILE *f, int n) { for(int i=0;i<n;i++) fputs(HZ,f); }
+/* ---- terminal size / raw mode ------------------------------------------ */
+static int W = 80, H = 24;
+static volatile int g_winch = 0;
+static void handle_winch(int sig) { (void)sig; g_winch = 1; }
 
-/* Move cursor to column c (1-based) */
-static void gotocol(FILE *f, int c) { fprintf(f, E "%dG", c); }
+static void term_raw_on(void);
+void term_restore(void);
 
-static void top_box(FILE *f, const char *title, const char *color, int w) {
-  fputs(C_GRY TL, f); hr(f, 2);
-  fprintf(f, " %s%s%s%s ", BOLD, color, title, RST C_GRY);
-  gotocol(f, w);
-  fputs(TR RST "\n", f);
+/* ---- UI state (protected by dash_mutex like everything else) ----------- */
+enum { PG_MAIN = 0, PG_BLOCKS, PG_HELP };
+static int g_page = PG_MAIN;
+static char g_msg[128] = "";
+static time_t g_msg_at = 0;
+static struct timeval g_last_frame = {0, 0};
+
+static void set_msg(const char *fmt, ...) {
+  va_list ap; va_start(ap, fmt);
+  vsnprintf(g_msg, sizeof(g_msg), fmt, ap);
+  va_end(ap);
+  g_msg_at = time(NULL);
 }
 
-static void bot_box(FILE *f, int w) {
-  fputs(C_GRY BL, f); hr(f, w-2); fputs(BR RST "\n", f);
-}
-
-/* Print right border at exact column W */
-static void rborder(FILE *f, int w) {
-  gotocol(f, w);
-  fprintf(f, C_GRY VT RST "\n");
-}
-
-static void row_empty(FILE *f, int w) {
-  fprintf(f, C_GRY VT RST);
-  gotocol(f, w);
-  fprintf(f, C_GRY VT RST "\n");
-}
-
-/* Format helpers */
+/* ---- formatting helpers ------------------------------------------------- */
 static const char *fmt_bytes(unsigned long b, char *buf, int sz) {
-  if(b < 1024)         snprintf(buf, sz, "%lu B", b);
-  else if(b < 1048576) snprintf(buf, sz, "%.1f KB", (double)b / 1024.0);
-  else                 snprintf(buf, sz, "%.1f MB", (double)b / 1048576.0);
+  if(b < 1024)         snprintf(buf, sz, "%luB", b);
+  else if(b < 1048576) snprintf(buf, sz, "%.1fK", (double)b / 1024.0);
+  else                 snprintf(buf, sz, "%.1fM", (double)b / 1048576.0);
   return buf;
 }
-
 static const char *fmt_uptime(time_t start, char *buf, int sz) {
   long s = (long)(time(NULL) - start);
   long d=s/86400, h=(s%86400)/3600, m=(s%3600)/60;
-  if(d > 0)      snprintf(buf, sz, "%ldd %ldh %ldm", d, h, m);
-  else if(h > 0) snprintf(buf, sz, "%ldh %ldm", h, m);
-  else           snprintf(buf, sz, "%ldm %lds", m, s % 60);
+  if(d > 0) snprintf(buf, sz, "%ldD %02ld:%02ld", d, h, m);
+  else      snprintf(buf, sz, "%02ld:%02ld:%02ld", h, m, s % 60);
   return buf;
 }
-
 static const char *fmt_dur(int secs, char *buf, int sz) {
-  if(secs < 60)        snprintf(buf, sz, "%ds", secs);
-  else if(secs < 3600) snprintf(buf, sz, "%dm %ds", secs/60, secs%60);
-  else                 snprintf(buf, sz, "%dh %dm", secs/3600, (secs%3600)/60);
+  if(secs < 0) secs = 0;
+  if(secs < 3600) snprintf(buf, sz, "%02d:%02d", secs / 60, secs % 60);
+  else            snprintf(buf, sz, "%d:%02d:%02d", secs / 3600, (secs % 3600) / 60, secs % 60);
   return buf;
 }
-
+static const char *fmt_clock(time_t t, char *buf, int sz) {
+  struct tm tmb; if(!localtime_r(&t, &tmb)) { snprintf(buf, sz, "--:--:--"); return buf; }
+  strftime(buf, sz, "%H:%M:%S", &tmb); return buf;
+}
 static const char *result_str(int r) {
-  switch(r) { case 0: return "BLOCKED"; case 1: return "GATE FAIL";
-              case 2: return "GATE PASS"; case 3: return "CONNECTED"; default: return "?"; }
+  switch(r) { case 0: return "BLOCKED"; case 1: return "GATE FAIL"; case 2: return "GATE PASS"; case 3: return "CONNECTED"; default: return "?"; }
 }
-/* LED indicator: lit if activity within last 2 seconds */
-static const char *led(time_t last) {
-  if(last == 0) return C_GRY BUE RST;
-  return (time(NULL) - last < 2) ? BOLD C_LGRN BUL RST : C_GRY BUE RST;
+static int result_color(int r) { return r == 3 || r == 2 ? TC_OK : r == 1 ? TC_WARN : TC_BAD; }
+/* a traffic byte as text: 7-bit, lowercase folded to uppercase (PETSCII set 1), controls as '.' */
+static char text_byte(unsigned char c) {
+  c &= 0x7f;
+  if(c >= 0x61 && c <= 0x7a) c = (unsigned char)(c - 0x20);
+  return (c >= 0x20 && c < 0x7f) ? (char)c : '.';
+}
+/* pad by display cells, not bytes (UTF-8 arrows/dots are one cell) */
+static int cells_of(const char *s) { int n = 0; for(; *s; s++) if(((unsigned char)*s & 0xC0) != 0x80) n++; return n; }
+static void put_padded(int row, int col, int color, const char *s, int width) {
+  tui_putn(row, col, color, s, width);
+  int n = cells_of(s); if(n > width) n = width;
+  if(n < width) tui_fill(row, col + n, width - n, color, " ");
+}
+static void put_right(int row, int col, int color, const char *s, int width) {
+  char buf[256]; snprintf(buf, sizeof(buf), "%*.*s", width, width, s); tui_putn(row, col, color, buf, width);
 }
 
-/* Traffic direction color */
-static const char *traffic_color(int type) {
-  return (type == 16) ? BOLD C_CYN : BOLD C_YEL;
-}
-
-/* ---- Main render ---- */
-
-static void render(void) {
-  /* Only draw when the interactive terminal dashboard (-M) owns the tty. In
-   * headless mode (-H web dashboard without -M) g_term_raw is 0, so the many
-   * internal render() calls from the stat/event updaters become no-ops and we
-   * never spew ANSI to stderr — we just keep collecting data in g_dash. */
-  if(!g_term_raw) return;
-  FILE *f = stderr;
-  W = 80; H = 24;
-  term_size(&W, &H);
-  if(W < 60) W = 60;
-  if(H < 20) H = 20;
-
-  int remaining = H - 20;
-  if(remaining < 4) remaining = 4;
-  int traf_rows = remaining * 3 / 5;
-  int hist_rows = remaining - traf_rows;
-  if(traf_rows < 2) traf_rows = 2;
-  if(hist_rows < 2) hist_rows = 2;
-
-  char b1[64], b2[64];
-  int lw = W / 2, rw = W - lw;
-  int inner = W - 4;
-
-  fprintf(f, CLR CHIDE);
-
-  /* ═══════ HEADER ═══════ */
-  top_box(f, "\xe2\x96\x93\xe2\x96\x92\xe2\x96\x91 TCPSER " VERSION " // " EDITION " \xe2\x96\x91\xe2\x96\x92\xe2\x96\x93", C_LCYN, W);
-  {
-    fmt_uptime(g_dash.start_time, b1, sizeof(b1));
-    fprintf(f, C_GRY VT RST " " C_LGRN "Uptime:" RST " " C_WHT "%-12s" RST
-            "  " C_LGRN "Port:" RST " " C_WHT ":%-5d" RST
-            "  " C_LGRN "Modem:" RST " " C_WHT "%s" RST " " C_GRY "@" RST " " C_LYEL "%d" RST,
-            b1, g_dash.port, g_dash.tty, g_dash.speed);
-    rborder(f, W);
-  }
-  bot_box(f, W);
-
-  /* ═══════ LINK STATUS + STATISTICS (side by side) ═══════ */
-  fputs(C_GRY TL, f); hr(f, 2);
-  fprintf(f, " " BOLD C_LMAG "Link Status" RST C_GRY " ");
-  gotocol(f, lw); fputs(TR, f);
-  fputs(TL, f); hr(f, 2);
-  fprintf(f, " " BOLD C_LYEL "Statistics" RST C_GRY " ");
-  gotocol(f, W); fputs(TR RST "\n", f);
-
-  /* Second column position in right panel */
-  int rcol2 = lw + rw / 2;
-
-  /* Row 1: Connection state + Connections */
-  {
-    fprintf(f, C_GRY VT RST " " C_CYN "State:" RST "  ");
-    if(g_dash.connected) fprintf(f, BOLD C_LGRN BUL " CARRIER LOCKED" RST);
-    else fprintf(f, C_LMAG BUE " AWAITING CARRIER" RST);
-    gotocol(f, lw); fprintf(f, C_GRY VT RST);
-
-    fprintf(f, C_GRY VT RST " " C_LYEL "Connections:" RST " " BOLD C_WHT "%lu" RST, g_dash.total_connections);
-    gotocol(f, rcol2);
-    fprintf(f, C_LYEL "Pass:" RST " " BOLD C_GRN "%lu" RST, g_dash.gate_pass);
-    rborder(f, W);
-  }
-
-  /* Row 2: LED header + Blocked/Fail */
-  {
-    /* Left: LED column headers aligned with dots below */
-    fprintf(f, C_GRY VT RST " " C_GRY "          RX TX" RST);
-    gotocol(f, lw); fprintf(f, C_GRY VT RST);
-
-    /* Right */
-    int nblocked = blocklist_count();
-    fprintf(f, C_GRY VT RST " " C_LYEL "Blocked:" RST " ");
-    if(nblocked > 0) fprintf(f, BOLD C_RED "%d" RST, nblocked);
-    else fprintf(f, C_WHT "0" RST);
-    gotocol(f, rcol2);
-    fprintf(f, C_LYEL "Fail:" RST " " BOLD C_RED "%lu" RST, g_dash.gate_fail);
-    rborder(f, W);
-  }
-
-  /* Row 3: CALLER LEDs + Bytes */
-  {
-    fprintf(f, C_GRY VT RST " " C_WHT "CALLER" RST C_GRY "..:" RST " %s  %s",
-            led(g_dash.last_caller_rx), led(g_dash.last_caller_tx));
-    gotocol(f, lw); fprintf(f, C_GRY VT RST);
-
-    fmt_bytes(g_dash.bytes_in, b1, sizeof(b1));
-    fmt_bytes(g_dash.bytes_out, b2, sizeof(b2));
-    fprintf(f, C_GRY VT RST " " C_LYEL "In:" RST " " C_LCYN "%s" RST, b1);
-    gotocol(f, rcol2);
-    fprintf(f, C_LYEL "Out:" RST " " C_LCYN "%s" RST, b2);
-    rborder(f, W);
-  }
-
-  /* Row 4: BBS LEDs + DCD/DSR */
-  {
-    fprintf(f, C_GRY VT RST " " C_WHT "BBS" RST C_GRY ".....:" RST " %s  %s",
-            led(g_dash.last_bbs_rx), led(g_dash.last_bbs_tx));
-    gotocol(f, lw); fprintf(f, C_GRY VT RST);
-
-    fprintf(f, C_GRY VT RST " " C_CYN "DCD:" RST " %s" BOLD "%-3s" RST,
-            g_dash.dcd_on ? C_LGRN : C_LRED, g_dash.dcd_on ? "ON" : "OFF");
-    gotocol(f, rcol2);
-    fprintf(f, C_CYN "DSR:" RST " %s" BOLD "%-3s" RST,
-            g_dash.dsr_on ? C_LGRN : C_LRED, g_dash.dsr_on ? "ON" : "OFF");
-    rborder(f, W);
-  }
-
-  /* Row 5: MODEM LEDs + Peer */
-  {
-    fprintf(f, C_GRY VT RST " " C_WHT "MODEM" RST C_GRY "...:" RST " %s  %s",
-            led(g_dash.last_bbs_rx > g_dash.last_caller_rx ? g_dash.last_bbs_rx : g_dash.last_caller_rx),
-            led(g_dash.last_bbs_tx > g_dash.last_caller_tx ? g_dash.last_bbs_tx : g_dash.last_caller_tx));
-    gotocol(f, lw); fprintf(f, C_GRY VT RST);
-
-    fprintf(f, C_GRY VT RST " " C_CYN "Peer:" RST " ");
-    if(g_dash.connected) {
-      int dur = (int)(time(NULL) - g_dash.session_start);
-      fmt_dur(dur, b1, sizeof(b1));
-      fprintf(f, BOLD C_WHT "%s" RST " " C_GRY "%s" RST, g_dash.peer_ip, b1);
-    } else {
-      fprintf(f, C_GRY "---" RST);
+/* ---- pages ---------------------------------------------------------------- */
+static void draw_lines_box(int top, int *next) {
+  int n = 0;
+  for(int i = 0; i < DASH_MAX_LINES; i++) if(g_dash.lines[i].inited) n++;
+  if(n == 0) n = 1;
+  int h = n + 3;
+  tui_box(top, 0, h, W, "LINES");
+  /* column table: {offset, width}; the header is built from the same table so
+   * it cannot drift from the rows. Total 78 cells: fits an 80-column terminal. */
+  enum { C_LN = 0, C_DEV = 3, C_SPD = 18, C_ST = 24, C_CALL = 33, C_DUR = 50, C_IN = 56, C_OUT = 63, C_DCD = 71, C_DTR = 75 };
+  const int X = 2;
+  tui_put(top + 1, X + C_LN, TC_DIM, "LN"); tui_put(top + 1, X + C_DEV, TC_DIM, "DEVICE"); tui_put(top + 1, X + C_SPD, TC_DIM, "SPEED");
+  tui_put(top + 1, X + C_ST, TC_DIM, "STATE"); tui_put(top + 1, X + C_CALL, TC_DIM, "CALLER"); put_right(top + 1, X + C_DUR, TC_DIM, "DUR", 5);
+  put_right(top + 1, X + C_IN, TC_DIM, "IN", 6); put_right(top + 1, X + C_OUT, TC_DIM, "OUT", 7); tui_put(top + 1, X + C_DCD, TC_DIM, "DCD"); tui_put(top + 1, X + C_DTR, TC_DIM, "DTR");
+  int r = top + 2, shown = 0;
+  char b1[32], line[64];
+  for(int i = 0; i < DASH_MAX_LINES; i++) {
+    dash_line_t *l = &g_dash.lines[i];
+    if(!l->inited) continue;
+    snprintf(line, sizeof(line), "%2d", i); tui_put(r, X + C_LN, TC_VALUE, line);
+    put_padded(r, X + C_DEV, TC_VALUE, l->device, 14);
+    snprintf(line, sizeof(line), "%5d", l->speed); tui_put(r, X + C_SPD, TC_VALUE, line);
+    put_padded(r, X + C_ST, l->connected ? TC_ACCENT : TC_DIM, l->connected ? "CARRIER" : "IDLE", 8);
+    if(l->connected) {
+      put_padded(r, X + C_CALL, TC_VALUE, l->peer_ip, 16);
+      put_right(r, X + C_DUR, TC_VALUE, fmt_dur((int)(time(NULL) - l->session_start), b1, sizeof(b1)), 5);
+      put_right(r, X + C_IN, TC_VALUE, fmt_bytes(l->bytes_in, b1, sizeof(b1)), 6);
+      put_right(r, X + C_OUT, TC_VALUE, fmt_bytes(l->bytes_out, b1, sizeof(b1)), 7);
     }
-    rborder(f, W);
+    tui_put(r, X + C_DCD + 1, l->connected ? TC_OK : TC_DIM, tui_glyph(l->connected ? G_DOT_ON : G_DOT_OFF));
+    tui_put(r, X + C_DTR + 1, l->dtr ? TC_OK : TC_DIM, tui_glyph(l->dtr ? G_DOT_ON : G_DOT_OFF));
+    r++; shown++;
   }
+  if(!shown) tui_put(r, 2, TC_DIM, "NO LINES CONFIGURED");
+  *next = top + h;
+}
 
-  fputs(C_GRY BL, f); hr(f, lw-2);
-  gotocol(f, lw); fputs(BR, f);
-  fputs(BL, f); hr(f, rw-2);
-  gotocol(f, W); fputs(BR RST "\n", f);
-
-  /* ═══════ TRAFFIC (hex + ASCII) ═══════ */
-  top_box(f, "Traffic", C_LCYN, W);
-
-  int size_w = 6;
-  /* Each byte = 3 chars hex + 1 char ascii (ratio 3:1).
-   * Available = W - borders(2) - dir(12) - size(6) - separators(dir│hex 3 + hex│ascii 3) = W - 26
-   * Per byte = 4 chars (3 hex + 1 ascii), so hex_bytes = available / 4 */
-  int hex_bytes = (W - 26) / 4;
-  if(hex_bytes > 32) hex_bytes = 32;
-  if(hex_bytes < 4) hex_bytes = 4;
-  int asc_w = hex_bytes;
-  /* Position ASCII and Size from right edge using gotocol */
-  int size_col = W - size_w - 1;
-  int asc_col = size_col - asc_w - 1;
-
-  /* Column headers */
-  fprintf(f, C_GRY VT RST " " BOLD C_LYEL "%-12s" RST " " C_GRY VT RST " "
-          BOLD C_LYEL "Hex Data" RST,
-          "Direction");
-  gotocol(f, asc_col - 2);
-  fprintf(f, C_GRY VT RST " " BOLD C_LYEL "ASCII" RST);
-  gotocol(f, size_col);
-  fprintf(f, BOLD C_LYEL "%*s" RST, size_w, "Size");
-  rborder(f, W);
-  fprintf(f, C_GRY VT RST " " C_GRY);
-  for(int i=0;i<inner;i++) fputs(HZ, f);
-  fprintf(f, RST);
-  rborder(f, W);
-
+static void draw_traffic_box(int top, int h) {
+  if(h < 3) return;
+  tui_box(top, 0, h, W, "TRAFFIC");
+  int rows = h - 3;
+  int dir_w = 11, size_w = 5;
+  int avail = W - 2 - dir_w - 1 - size_w - 4;     /* borders, dir, gap, size, separators */
+  int hex_bytes = avail / 4; if(hex_bytes > 32) hex_bytes = 32; if(hex_bytes < 4) hex_bytes = 4;
+  int hex_w = hex_bytes * 3 - 1, txt_w = hex_bytes;
+  int col_dir = 2, col_hex = col_dir + dir_w + 1, col_txt = col_hex + hex_w + 2, col_size = W - 2 - size_w;
+  tui_put(top + 1, col_dir, TC_DIM, "DIRECTION");
+  tui_put(top + 1, col_hex, TC_DIM, "HEX");
+  tui_put(top + 1, col_txt, TC_DIM, "TEXT");
+  put_right(top + 1, col_size, TC_DIM, "SIZE", size_w);
   int show = g_dash.traffic_count < DASH_TRAFFIC_LINES ? g_dash.traffic_count : DASH_TRAFFIC_LINES;
-
-  for(int r = 0; r < traf_rows; r++) {
-    if(r < show) {
-      int idx = (g_dash.traffic_head - show + r + DASH_TRAFFIC_LINES) % DASH_TRAFFIC_LINES;
-      dash_traffic_line_t *t = &g_dash.traffic[idx];
-      const char *clr = traffic_color(t->type);
-
-      int nb = t->rawlen;
-      if(nb > hex_bytes) nb = hex_bytes;
-
-      /* Direction */
-      fprintf(f, C_GRY VT RST " %s%-12s" RST " " C_GRY VT RST " ", clr, t->dir);
-
-      /* Hex bytes in blue */
-      fprintf(f, C_LBLU);
-      for(int i = 0; i < nb; i++) {
-        if(i > 0) fputc(' ', f);
-        fprintf(f, "%02X", t->raw[i]);
-      }
-      fprintf(f, RST);
-
-      /* ASCII positioned from right side */
-      gotocol(f, asc_col - 2);
-      fprintf(f, C_GRY VT RST " " C_LGRN);
-      for(int i = 0; i < nb; i++) {
-        unsigned char c = t->raw[i];
-        fputc((c >= 0x20 && c < 0x7f) ? c : '.', f);
-      }
-      fprintf(f, RST);
-
-      /* Size at far right */
-      gotocol(f, size_col);
-      fprintf(f, DIM "%*d" RST, size_w, t->bytes);
-      rborder(f, W);
-    } else {
-      row_empty(f, W);
-    }
+  if(show > rows) show = rows;
+  for(int r = 0; r < show; r++) {
+    int idx = (g_dash.traffic_head - show + r + DASH_TRAFFIC_LINES) % DASH_TRAFFIC_LINES;
+    dash_traffic_line_t *t = &g_dash.traffic[idx];
+    int row = top + 2 + r;
+    int in = (t->type == 16);
+    char dir[24]; snprintf(dir, sizeof(dir), in ? "CALLER%sBBS" : "BBS%sCALLER", tui_glyph(G_ARROW_R));
+    put_padded(row, col_dir, in ? TC_ACCENT : TC_ACCENT2, dir, dir_w);
+    int nb = t->rawlen; if(nb > hex_bytes) nb = hex_bytes;
+    char hex[128], txt[64]; int hp = 0;
+    for(int i = 0; i < nb; i++) { hp += snprintf(hex + hp, sizeof(hex) - (size_t)hp, "%02X%s", t->raw[i], i + 1 < nb ? " " : ""); txt[i] = text_byte(t->raw[i]); }
+    txt[nb] = 0;
+    put_padded(row, col_hex, TC_LABEL, hex, hex_w);
+    put_padded(row, col_txt, TC_VALUE, txt, txt_w);
+    char sz[16]; snprintf(sz, sizeof(sz), "%d", t->bytes);
+    put_right(row, col_size, TC_DIM, sz, size_w);
   }
-  bot_box(f, W);
+  if(show == 0) tui_put(top + 2, 2, TC_DIM, "NO TRAFFIC YET");
+}
 
-  /* ═══════ CONNECTION HISTORY ═══════ */
-  top_box(f, "Connection History", C_LMAG, W);
-
-  int c_time=10, c_ip=18;
-  int c_result = inner - c_time - c_ip - 4;
-  if(c_result < 10) c_result = 10;
-
-  fprintf(f, C_GRY VT RST " " BOLD C_LYEL "%-*s  %-*s  %-*s" RST,
-          c_time, "Time", c_ip, "IP Address", c_result, "Result");
-  rborder(f, W);
-  fprintf(f, C_GRY VT RST " " C_GRY);
-  for(int i=0;i<inner;i++) fputs(HZ, f);
-  fprintf(f, RST);
-  rborder(f, W);
-
+static void draw_callers_box(int top, int h) {
+  if(h < 3) return;
+  tui_box(top, 0, h, W, "RECENT CALLERS");
+  tui_put(top + 1, 2, TC_DIM, "TIME     CALLER           RESULT     DUR      IN     OUT");
+  int rows = h - 3;
   int hshow = g_dash.history_count < DASH_HISTORY_LINES ? g_dash.history_count : DASH_HISTORY_LINES;
-  for(int r = 0; r < hist_rows; r++) {
-    if(r < hshow) {
-      int idx = (g_dash.history_head - hshow + r + DASH_HISTORY_LINES) % DASH_HISTORY_LINES;
-      dash_history_entry_t *h = &g_dash.history[idx];
-
-      char timebuf[16];
-      struct tm tmbuf;
-      struct tm *tm = localtime_r(&h->connect_time, &tmbuf);
-      if(tm) strftime(timebuf, sizeof(timebuf), "%H:%M:%S", tm);
-      else snprintf(timebuf, sizeof(timebuf), "--:--:--");
-
-      fprintf(f, C_GRY VT RST " " DIM "%-*s" RST "  " C_WHT "%-*s" RST "  ",
-              c_time, timebuf, c_ip, h->ip);
-
-      if(h->result == 0) {
-        /* Blocked */
-        fprintf(f, BOLD C_RED "BLOCKED" RST);
-      } else if(h->result == 1) {
-        /* Gate fail */
-        fprintf(f, BOLD C_YEL "GATE FAIL" RST);
-      } else {
-        /* Connected / Gate pass — show duration + data */
-        fmt_dur(h->duration, b1, sizeof(b1));
-        fmt_bytes((unsigned long)(h->bytes_in + h->bytes_out), b2, sizeof(b2));
-        fprintf(f, BOLD C_GRN "%s" RST " " C_GRY "%s" RST " " C_WHT "%s" RST,
-                result_str(h->result), b1, b2);
-      }
-      rborder(f, W);
-    } else {
-      row_empty(f, W);
+  if(hshow > rows) hshow = rows;
+  char b1[32], b2[32], b3[32], line[160];
+  for(int r = 0; r < hshow; r++) {
+    int idx = (g_dash.history_head - 1 - r + DASH_HISTORY_LINES) % DASH_HISTORY_LINES;   /* newest first */
+    dash_history_entry_t *e = &g_dash.history[idx];
+    int row = top + 2 + r;
+    snprintf(line, sizeof(line), "%s %-16.16s", fmt_clock(e->connect_time, b1, sizeof(b1)), e->ip);
+    tui_put(row, 2, TC_VALUE, line);
+    put_padded(row, 28, result_color(e->result), result_str(e->result), 10);
+    if(e->result >= 2) {
+      snprintf(line, sizeof(line), "%5s %6s %7s", fmt_dur(e->duration, b1, sizeof(b1)),
+               fmt_bytes((unsigned long)e->bytes_in, b2, sizeof(b2)), fmt_bytes((unsigned long)e->bytes_out, b3, sizeof(b3)));
+      tui_put(row, 39, TC_VALUE, line);
     }
   }
-  bot_box(f, W);
-
-  /* Hotkey bar */
-  fprintf(f, " " C_GRY "[" RST BOLD C_LGRN "H" RST C_GRY "]" RST " " C_WHT "Hangup" RST
-          "  " C_GRY "[" RST BOLD C_LYEL "R" RST C_GRY "]" RST " " C_WHT "Reset" RST
-          "  " C_GRY "[" RST BOLD C_LCYN "S" RST C_GRY "]" RST " " C_WHT "Refresh" RST
-          "  " C_GRY "[" RST BOLD C_LMAG "B" RST C_GRY "]" RST " " C_WHT "Blocklist" RST
-          "  " C_GRY "[" RST BOLD C_LYEL "U" RST C_GRY "]" RST " " C_WHT "Unblock" RST
-          "  " C_GRY "[" RST BOLD C_LRED "Q" RST C_GRY "]" RST " " C_WHT "Quit" RST "\n");
-  fflush(f);
+  if(hshow == 0) tui_put(top + 2, 2, TC_DIM, "NO CALLS YET");
 }
 
-/* Partial redraw: only traffic rows + LEDs + byte counter */
-static void render_traffic_only(void) {
-  /* Terminal-only: never draw in headless (web-only) mode — see render(). */
-  if(!g_term_raw) return;
-  FILE *f = stderr;
-  int tw = 80, th = 24;
-  term_size(&tw, &th);
-  if(tw < 60) tw = 60;
-
-  int remaining = th - 20;
-  if(remaining < 4) remaining = 4;
-  int traf_rows = remaining * 3 / 5;
-  if(traf_rows < 2) traf_rows = 2;
-
-  int size_w = 6;
-  int hex_bytes = (tw - 26) / 4;
-  if(hex_bytes > 32) hex_bytes = 32;
-  if(hex_bytes < 4) hex_bytes = 4;
-  int asc_w = hex_bytes;
-  int size_col = tw - size_w - 1;
-  int asc_col = size_col - asc_w - 1;
-
-  int show = g_dash.traffic_count < DASH_TRAFFIC_LINES ? g_dash.traffic_count : DASH_TRAFFIC_LINES;
-
-  /* Layout: header=3 rows, side-by-side=7 rows (1 top + 5 content + 1 bottom),
-   * traffic top border=1 row, traffic column headers=2 rows. Content starts at row 14. */
-  int start_row = 14;
-
-  for(int r = 0; r < traf_rows; r++) {
-    fprintf(f, E "%d;1H", start_row + r);
-    if(r < show) {
-      int idx = (g_dash.traffic_head - show + r + DASH_TRAFFIC_LINES) % DASH_TRAFFIC_LINES;
-      dash_traffic_line_t *t = &g_dash.traffic[idx];
-      const char *clr = traffic_color(t->type);
-      int nb = t->rawlen;
-      if(nb > hex_bytes) nb = hex_bytes;
-
-      fprintf(f, C_GRY VT RST " %s%-12s" RST " " C_GRY VT RST " ", clr, t->dir);
-      fprintf(f, C_LBLU);
-      for(int i = 0; i < nb; i++) {
-        if(i > 0) fputc(' ', f);
-        fprintf(f, "%02X", t->raw[i]);
-      }
-      fprintf(f, RST);
-      gotocol(f, asc_col - 2);
-      fprintf(f, C_GRY VT RST " " C_LGRN);
-      for(int i = 0; i < nb; i++) {
-        unsigned char c = t->raw[i];
-        fputc((c >= 0x20 && c < 0x7f) ? c : '.', f);
-      }
-      fprintf(f, RST);
-      gotocol(f, size_col);
-      fprintf(f, DIM "%*d" RST, size_w, t->bytes);
-      gotocol(f, tw);
-      fprintf(f, C_GRY VT RST);
-    } else {
-      fprintf(f, C_GRY VT RST);
-      gotocol(f, tw);
-      fprintf(f, C_GRY VT RST);
-    }
+static void draw_events_box(int top, int h) {
+  if(h < 3) return;
+  tui_box(top, 0, h, W, "EVENTS");
+  int rows = h - 2;
+  int n = g_dash.events_count < DASH_EVENTS ? g_dash.events_count : DASH_EVENTS;
+  if(n > rows) n = rows;
+  char b1[32], line[200];
+  for(int i = 0; i < n; i++) {
+    int idx = (g_dash.events_head - 1 - i + DASH_EVENTS) % DASH_EVENTS;
+    snprintf(line, sizeof(line), "%s ", fmt_clock(g_dash.events[idx].when, b1, sizeof(b1)));
+    tui_put(top + 1 + i, 2, TC_DIM, line);
+    put_padded(top + 1 + i, 11, TC_VALUE, g_dash.events[idx].text, W - 13);
   }
+  if(n == 0) tui_put(top + 1, 2, TC_DIM, "NOTHING YET");
+}
 
-  /* Update LEDs (rows 7-8: header=3, panel top=1, state=1, rx/tx hdr=1, then CALLER=row 7) */
-  int lw = tw / 2;
-  int rw = tw - lw;
-  int rcol2 = lw + rw / 2;
+static void draw_blocklist_page(int top, int h) {
+  tui_box(top, 0, h, W, "BLOCKLIST");
+  block_info_t bl[64];
+  int n = blocklist_list_ex(bl, 64);
+  tui_put(top + 1, 2, TC_DIM, "IP               KIND       UNTIL");
+  int rows = h - 3; if(n > rows) n = rows;
+  char b1[32], line[128];
+  for(int i = 0; i < n; i++) {
+    snprintf(line, sizeof(line), "%-16.16s ", bl[i].ip);
+    tui_put(top + 2 + i, 2, TC_VALUE, line);
+    tui_put(top + 2 + i, 19, bl[i].permanent ? TC_BAD : TC_WARN, bl[i].permanent ? "PERMANENT " : "TIMED     ");
+    if(!bl[i].permanent) tui_put(top + 2 + i, 30, TC_VALUE, fmt_clock(bl[i].until, b1, sizeof(b1)));
+  }
+  if(n == 0) tui_put(top + 2, 2, TC_DIM, "NOTHING BLOCKED");
+  tui_put(top + h - 2, 2, TC_DIM, "U=CLEAR TIMED BLOCKS   S OR ESC=BACK");
+}
 
-  fprintf(f, E "7;1H");
-  fprintf(f, C_GRY VT RST " " C_WHT "CALLER" RST C_GRY "..:" RST " %s  %s",
-          led(g_dash.last_caller_rx), led(g_dash.last_caller_tx));
-  gotocol(f, lw);
-  fprintf(f, C_GRY VT RST);
+static void draw_help_page(int top, int h) {
+  tui_box(top, 0, h, W, "HELP");
+  static const char *lines[] = {
+    "H  HANG UP THE CURRENT CALLER (ASKS Y/N)",
+    "R  RESET THE MODEM EMULATION (ATZ)",
+    "B  BLOCKLIST PAGE        U  CLEAR TIMED BLOCKS (ASKS Y/N)",
+    "P  PHOSPHOR GREEN / AMBER / WHITE",
+    "S  BACK TO THE MAIN SCREEN / REPAINT",
+    "Q  QUIT TCPSER (ASKS Y/N): HANGS UP CALLERS, SAVES STATS",
+    "",
+    "TERMINAL: 60X16 MINIMUM; TRAFFIC TAKES EVERY SPARE ROW.",
+    "COLOURS: 256 / 16 / MONO FROM $TERM; NO_COLOR AND TCPSER_TUI_ASCII",
+    "ARE HONOURED; TCPSER_TUI_PHOSPHOR=GREEN|AMBER|WHITE.",
+    "WARNINGS AND ERRORS FROM THE LOG APPEAR IN THE EVENTS PANE.",
+  };
+  int n = (int)(sizeof(lines) / sizeof(lines[0]));
+  for(int i = 0; i < n && i < h - 2; i++) tui_put(top + 1 + i, 2, i == 0 || i > 6 ? TC_VALUE : TC_LABEL, lines[i]);
+}
 
-  fprintf(f, E "8;1H");
-  fprintf(f, C_GRY VT RST " " C_WHT "BBS" RST C_GRY ".....:" RST " %s  %s",
-          led(g_dash.last_bbs_rx), led(g_dash.last_bbs_tx));
-  gotocol(f, lw);
-  fprintf(f, C_GRY VT RST);
-
-  /* Update byte counters (right panel, row 7 = In/Out) */
+/* ---- the frame ------------------------------------------------------------- */
+static void render(void) {
+  if(!g_term_raw || !tui_active()) return;
+  tui_size(&W, &H);
+  tui_begin();
+  if(W < 60 || H < 16) {
+    tui_put(0, 0, TC_WARN, "TERMINAL TOO SMALL: NEED 60X16");
+    tui_flush();
+    return;
+  }
+  char b1[64], b2[64];
+  /* system line */
+  tui_put(0, 1, TC_VALUE, "TCPSER " VERSION);
   {
-    char b1[64], b2[64];
-    fmt_bytes(g_dash.bytes_in, b1, sizeof(b1));
-    fmt_bytes(g_dash.bytes_out, b2, sizeof(b2));
-    fprintf(f, E "7;%dH", lw + 1);
-    fprintf(f, C_GRY VT RST " " C_LYEL "In:" RST " " C_LCYN "%s" RST, b1);
-    gotocol(f, rcol2);
-    fprintf(f, C_LYEL "Out:" RST " " C_LCYN "%s" RST, b2);
-    gotocol(f, tw);
-    fprintf(f, C_GRY VT RST);
+    const char *name = EDITION;
+    int len = (int)strlen(name);
+    tui_put(0, (W - len) / 2, TC_VALUE, name);
+    time_t now = time(NULL); struct tm tmb; localtime_r(&now, &tmb);
+    strftime(b1, sizeof(b1), "%d/%m/%y %H:%M:%S", &tmb);
+    tui_put(0, W - 1 - (int)strlen(b1), TC_LABEL, b1);
+  }
+  tui_hrule(1, 0, W);
+
+  /* status strip: uptime, port, counters, blocked */
+  snprintf(b2, sizeof(b2), "UP %s  PORT :%d  CALLS %lu  PASS %lu  FAIL %lu  DROP %lu  IN %s",
+           fmt_uptime(g_dash.start_time, b1, sizeof(b1)), g_dash.port, g_dash.total_connections,
+           g_dash.gate_pass, g_dash.gate_fail, g_dash.blocked, fmt_bytes(g_dash.bytes_in, (char[32]){0}, 32));
+  tui_putn(2, 1, TC_LABEL, b2, W - 2);
+  {
+    char o[48]; snprintf(o, sizeof(o), "OUT %s  BLOCKED %d", fmt_bytes(g_dash.bytes_out, b1, sizeof(b1)), blocklist_count());
+    if((int)strlen(b2) + (int)strlen(o) + 4 < W) tui_put(2, (int)strlen(b2) + 3, TC_LABEL, o);
   }
 
-  fflush(f);
+  int top = 3, next = 3;
+  int msg_row = H - 2, keys_row = H - 1;
+  if(g_page == PG_BLOCKS)      draw_blocklist_page(top, msg_row - top);
+  else if(g_page == PG_HELP)   draw_help_page(top, msg_row - top);
+  else {
+    draw_lines_box(top, &next);
+    /* rows for traffic + callers + events; on a short terminal the panes are
+     * dropped from the bottom up: events first, then callers. Traffic keeps at
+     * least two rows, callers a header plus one row, events one row. */
+    int remaining = msg_row - next;
+    int ev_h = remaining >= 14 ? 4 : 3;
+    int cal_h = remaining >= 16 ? 6 : remaining >= 12 ? 5 : 4;
+    int traf_h = remaining - ev_h - cal_h;
+    if(traf_h < 4) { ev_h = 0; traf_h = remaining - cal_h; }
+    if(traf_h < 4) { cal_h = 0; traf_h = remaining; }
+    if(traf_h >= 3) { draw_traffic_box(next, traf_h); next += traf_h; }
+    if(cal_h)       { draw_callers_box(next, cal_h);  next += cal_h; }
+    if(ev_h)        draw_events_box(next, ev_h);
+  }
+
+  /* message line + hotkeys */
+  if(g_msg[0] && time(NULL) - g_msg_at > 8 && !g_confirm) g_msg[0] = 0;
+  if(g_msg[0]) tui_putn(msg_row, 1, g_confirm ? TC_WARN : TC_VALUE, g_msg, W - 2);
+  {
+    static const char *keys_long[][2]  = { {"H", "HANG UP"}, {"R", "RESET"}, {"B", "BLOCKLIST"}, {"U", "UNBLOCK"}, {"P", "PHOSPHOR"}, {"?", "HELP"}, {"Q", "QUIT"} };
+    static const char *keys_short[][2] = { {"H", "HANG"}, {"R", "RESET"}, {"B", "BLOCK"}, {"U", "UNBLK"}, {"P", "PHOS"}, {"?", "HELP"}, {"Q", "QUIT"} };
+    const char *(*keys)[2] = W >= 78 ? keys_long : keys_short;   /* every key stays visible down to 60 columns */
+    const char *ph = tui_phosphor();
+    int ph_col = W - 1 - (int)strlen(ph), c = 1;
+    for(unsigned i = 0; i < sizeof(keys_long) / sizeof(keys_long[0]); i++) {
+      int need = 2 + (int)strlen(keys[i][1]);
+      if(c + need > ph_col - 2) { ph_col = -1; if(c + need > W - 1) break; }   /* keys win over the phosphor name */
+      char k[8]; snprintf(k, sizeof(k), "%s=", keys[i][0]);
+      tui_put(keys_row, c, TC_VALUE, k); c += 2;
+      tui_put(keys_row, c, TC_LABEL, keys[i][1]); c += (int)strlen(keys[i][1]) + 2;
+    }
+    if(ph_col > 0) tui_put(keys_row, ph_col, TC_DIM, ph);
+  }
+  tui_flush();
+  gettimeofday(&g_last_frame, NULL);
+}
+
+/* render at most ~10x/s from the traffic path; the periodic refresh in the
+ * main loop fills in the rest */
+static void render_throttled(void) {
+  if(!g_term_raw) return;
+  struct timeval now; gettimeofday(&now, NULL);
+  long ms = (now.tv_sec - g_last_frame.tv_sec) * 1000 + (now.tv_usec - g_last_frame.tv_usec) / 1000;
+  if(ms >= 100 || ms < 0) render();
 }
 
 /* Keyboard — send commands through pipe protocol (thread-safe) */
@@ -686,7 +510,7 @@ void dashboard_event(int type, unsigned char *data, int len) {
     if(g_dash.traffic_count < DASH_TRAFFIC_LINES) g_dash.traffic_count++;
   }
 
-  render_traffic_only();
+  render_throttled();
   pthread_mutex_unlock(&dash_mutex);
 }
 
@@ -843,48 +667,13 @@ void dashboard_stat_gate(int passed, const char *ip) {
 }
 
 void dashboard_render(void) {
-  if(!g_dash.enabled || g_dash_paused) return;
-  if(g_confirm) {
-    /* Keep the y/N prompt on screen instead of repainting over it; give up
-     * waiting after CONFIRM_TIMEOUT so an unanswered prompt cannot freeze
-     * the display. */
-    if(time(NULL) - g_confirm_at < CONFIRM_TIMEOUT) return;
-    g_confirm = 0;
-  }
+  if(!g_dash.enabled || !g_term_raw) return;
   pthread_mutex_lock(&dash_mutex); render(); pthread_mutex_unlock(&dash_mutex);
 }
 
 int dashboard_check_winch(void) {
-  if(g_winch) { g_winch = 0; dashboard_render(); return 1; }
+  if(g_winch) { g_winch = 0; tui_invalidate(); dashboard_render(); return 1; }
   return 0;
-}
-
-static void do_show_blocklist(void) {
-  char ips[32][16];
-  int count = blocklist_list(ips, 32);
-  int i;
-  FILE *f = stderr;
-
-  g_dash_paused = 1;  /* pause auto-render */
-  fprintf(f, "\033[2J\033[H");  /* clear screen, cursor home */
-  fprintf(f, "\n" BOLD C_LMAG "  Blocklist (%d entries):" RST "\n\n", count);
-  if(count == 0) {
-    fprintf(f, "  " C_GRY "(no blocked IPs)" RST "\n");
-  } else {
-    for(i = 0; i < count; i++) {
-      fprintf(f, "    " C_LRED "%-15s" RST "\n", ips[i]);
-    }
-  }
-  fprintf(f, "\n  " C_GRY "[U] Clear timed blocks   [S] Return to dashboard" RST "\n");
-  fflush(f);
-}
-
-static void do_unblock(void) {
-  int cleared = blocklist_unblock_all_timed();
-  FILE *f = stderr;
-  fprintf(f, "\n  " C_LYEL "Cleared %d timed block(s)" RST "\n", cleared);
-  fprintf(f, "  " C_GRY "[S] Return to dashboard" RST "\n");
-  fflush(f);
 }
 
 int dashboard_quit_requested(void) { return g_quit_requested; }
@@ -892,44 +681,49 @@ int dashboard_quit_requested(void) { return g_quit_requested; }
 static void ask_confirm(char key, const char *what) {
   g_confirm = key;
   g_confirm_at = time(NULL);
-  /* Overwrite the line under the hotkey bar with the prompt. */
-  fprintf(stderr, "\r" E "2K" " " BOLD C_LYEL "%s? [y/N]" RST " ", what);
-  fflush(stderr);
+  snprintf(g_msg, sizeof(g_msg), "%s? (Y/N)", what);
+  g_msg_at = g_confirm_at;
 }
 
 void dashboard_check_keyboard(void) {
   /* Interactive keys only make sense when the terminal dashboard owns the tty
-   * in raw mode. In headless (web-only) mode, never read stdin — a blocking
-   * read would stall the main loop. */
+   * in raw mode. In headless (web-only) mode, never read stdin. */
   if(!g_dash.enabled || !g_term_raw) return;
   char ch;
+  int changed = 0;
   while(read(STDIN_FILENO, &ch, 1) == 1) {
+    changed = 1;
     if(g_confirm) {
-      /* Destructive keys (hang up a live caller, clear blocks, quit) sit on
-       * adjacent single keys and used to fire instantly; 'q' even exit(0)'d
-       * past the graceful shutdown (no NO CARRIER, stats not saved). */
+      if(time(NULL) - g_confirm_at > CONFIRM_TIMEOUT) g_confirm = 0;   /* stale prompt: fall through */
+    }
+    if(g_confirm) {
       char pending = g_confirm;
       g_confirm = 0;
       if(ch == 'y' || ch == 'Y') {
         switch(pending) {
-          case 'h': do_hangup(); break;
-          case 'u': do_unblock(); continue;   /* leaves its own overlay text */
+          case 'h': do_hangup(); set_msg("HANG UP REQUESTED"); break;
+          case 'u': { int n = blocklist_unblock_all_timed(); set_msg("CLEARED %d TIMED BLOCK(S)", n); break; }
           case 'q': g_quit_requested = 1; return;
         }
-      }
-      g_dash_paused = 0;
-      dashboard_render();
+      } else set_msg("CANCELLED");
       continue;
     }
     switch(ch) {
-      case 'h': case 'H': ask_confirm('h', "Hang up the current caller"); break;
-      case 'r': case 'R': do_reset(); break;
-      case 's': case 'S': g_dash_paused = 0; dashboard_render(); break;
-      case 'b': case 'B': do_show_blocklist(); break;
-      case 'u': case 'U': ask_confirm('u', "Clear all timed blocks"); break;
-      case 'q': case 'Q': ask_confirm('q', "Quit tcpser (hangs up callers, saves stats)"); break;
+      case 'h': case 'H': {
+        int online = 0; for(int i = 0; i < DASH_MAX_LINES; i++) if(g_dash.lines[i].inited && g_dash.lines[i].connected) online = 1;
+        if(online) ask_confirm('h', "HANG UP THE CURRENT CALLER"); else set_msg("NO CALLER ONLINE");
+        break; }
+      case 'r': case 'R': do_reset(); set_msg("MODEM RESET SENT (ATZ)"); break;
+      case 'b': case 'B': g_page = (g_page == PG_BLOCKS) ? PG_MAIN : PG_BLOCKS; tui_invalidate(); break;
+      case '?': case '/': g_page = (g_page == PG_HELP) ? PG_MAIN : PG_HELP; tui_invalidate(); break;
+      case 's': case 'S': case 27: g_page = PG_MAIN; g_msg[0] = 0; tui_invalidate(); break;
+      case 'u': case 'U': ask_confirm('u', "CLEAR ALL TIMED BLOCKS"); break;
+      case 'p': case 'P': set_msg("PHOSPHOR: %s", tui_next_phosphor()); break;
+      case 'q': case 'Q': ask_confirm('q', "QUIT TCPSER (HANGS UP CALLERS, SAVES STATS)"); break;
+      default: break;
     }
   }
+  if(changed) dashboard_render();
 }
 
 void dashboard_set_stats_path(const char *path) {

@@ -144,17 +144,27 @@ level shifter. No libraries beyond libc and pthreads.
 <tr>
 <td width="50%" valign="top">
 
-**Terminal (`-M`)** — runs on stderr, over SSH, on a Pi. Link state and LEDs,
-live hex/ASCII traffic in both directions, connection history, blocklist
-overlay. Destructive hotkeys ask `y/N`.
+**Terminal (`-M`)** — runs on stderr, over SSH, on a Pi. The same 5250 idiom
+as the web console: system line, status strip, a LINES subfile (device, speed,
+carrier, caller, duration, bytes, DCD/DTR), live hex + text traffic in both
+directions, recent callers, and an EVENTS pane that receives the log's
+warnings and errors. Drawn on a diffed cell buffer: no flicker, a few bytes
+per refresh on a quiet screen, and a frozen SSH session can never stall the
+modem. Adapts from 60×16 up (traffic takes every spare row); resize any time.
+Colours follow the terminal (256 / 16 / mono, `NO_COLOR` honoured); glyphs
+fall back to ASCII outside UTF-8 locales or with `TCPSER_TUI_ASCII=1`;
+`TCPSER_TUI_PHOSPHOR=green|amber|white` picks the phosphor. Destructive
+hotkeys ask `y/N`.
 
 | Key | Action |
 |-----|--------|
 | `H` | Hang up the current caller |
 | `R` | Reset the modem (same as `ATZ`) |
-| `B` | Show the IP blocklist |
+| `B` | Blocklist page |
 | `U` | Clear all timed blocks |
-| `S` | Back to the dashboard / refresh |
+| `P` | Phosphor green / amber / white |
+| `?` | Help page |
+| `S` / `Esc` | Back to the main screen / repaint |
 | `Q` | Quit (hangs up callers, saves stats) |
 
 </td>
