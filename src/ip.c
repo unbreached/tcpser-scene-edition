@@ -8,12 +8,42 @@
 #include <string.h>       // for atoi...
 #include <errno.h>
 #include <netinet/tcp.h>
+#include <fcntl.h>
+#include <poll.h>
+#include <sys/time.h>
+
+#include "util.h"
 
 #include "debug.h"
 #include "ip.h"
 #include "phone_book.h"
 
 const int BACK_LOG = 5;
+
+/* Per-connection socket setup, for accepted and dialled sockets alike:
+ * blocking I/O (BSDs hand accept() the listener's O_NONBLOCK), close-on-exec,
+ * no Nagle delay (single keystrokes), keepalive to reap dead peers, and a send
+ * timeout so a peer that stops reading cannot block the line's thread. */
+void ip_tune_socket(int fd) {
+  int on = 1;
+  if(fd < 0) return;
+  int fl = fcntl(fd, F_GETFL);
+  if(fl >= 0 && (fl & O_NONBLOCK)) (void)fcntl(fd, F_SETFL, fl & ~O_NONBLOCK);
+  set_cloexec(fd);
+  (void)setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &on, sizeof(on));
+  (void)setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &on, sizeof(on));
+#ifdef TCP_KEEPIDLE
+  { int idle = TCPSER_KEEPIDLE; (void)setsockopt(fd, IPPROTO_TCP, TCP_KEEPIDLE, &idle, sizeof(idle)); }
+#endif
+#ifdef TCP_KEEPINTVL
+  { int intvl = TCPSER_KEEPINTVL; (void)setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL, &intvl, sizeof(intvl)); }
+#endif
+#ifdef TCP_KEEPCNT
+  { int cnt = TCPSER_KEEPCNT; (void)setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT, &cnt, sizeof(cnt)); }
+#endif
+  { struct timeval tv; tv.tv_sec = TCPSER_SEND_TIMEOUT; tv.tv_usec = 0;
+    (void)setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv)); }
+}
 
 int ip_init_server_conn(char *ip, int port) {
   int sSocket = 0, on = 0, rc = 0;
@@ -91,6 +121,10 @@ int ip_init_server_conn(char *ip, int port) {
 
       rc = listen(sSocket, BACK_LOG);
       LOG(LOG_INFO, "Server socket listening for connections");
+      /* Non-blocking listener: a connection that is reset while still in the
+       * queue must make accept() fail, not block the thread that select()ed. */
+      { int fl = fcntl(sSocket, F_GETFL); if(fl >= 0) (void)fcntl(sSocket, F_SETFL, fl | O_NONBLOCK); }
+      set_cloexec(sSocket);
       if (-1 == rc) {
         ELOG(LOG_FATAL, "Server socket could not listen on port");
         close(sSocket);
@@ -103,13 +137,20 @@ int ip_init_server_conn(char *ip, int port) {
 }
 
 int ip_connect(char *ip) {
+  return ip_connect_ex(ip, 30, NULL, NULL, NULL);
+}
+
+int ip_connect_ex(char *ip, int timeout_s, int (*aborted)(void *), void *arg, int *why) {
   struct sockaddr_in pin;
   int sd = 0;
   int port = 23;
+  int dummy;
   char spec[PH_ENTRY_SIZE > 256 ? PH_ENTRY_SIZE : 256];
   char portstr[8];
 
   LOG_ENTER();
+  if(!why) why = &dummy;
+  *why = IP_ERR_OTHER;
   /* "host[:port]" on a private copy (no strtok: it is not reentrant and it
    * mutates the caller's phone-book entry) */
   if(!ip) { LOG(LOG_ERROR, "No host address to connect to"); return -1; }
@@ -119,9 +160,10 @@ int ip_connect(char *ip) {
   if(!spec[0]) {
     /* the dial string "ATD:" or an empty phone-book entry */
     LOG(LOG_ERROR, "No host address to connect to");
+    *why = IP_ERR_DNS;
     return -1;
   }
-  if(port <= 0 || port > 65535) { LOG(LOG_ERROR, "Port out of range in %s", ip); return -1; }
+  if(port <= 0 || port > 65535) { LOG(LOG_ERROR, "Port out of range in %s", ip); *why = IP_ERR_DNS; return -1; }
 
   LOG(LOG_DEBUG, "Calling %s", ip);
   memset(&pin, 0, sizeof(pin));
@@ -136,6 +178,7 @@ int ip_connect(char *ip) {
   int gai = getaddrinfo(spec, portstr, &hints, &res);
   if(gai != 0 || !res) {
     LOG(LOG_ERROR, "Host %s was invalid: %s", spec, gai_strerror(gai));
+    *why = IP_ERR_DNS;
     return -1;
   }
   memcpy(&pin, res->ai_addr, sizeof(pin));
@@ -146,13 +189,40 @@ int ip_connect(char *ip) {
     ELOG(LOG_ERROR, "could not create client socket");
     return -1;
   }
+  set_cloexec(sd);
 
-  /* connect to PORT on HOST */
-  if (connect(sd, (struct sockaddr *)&pin, sizeof(pin)) == -1) {
+  /* Non-blocking connect so the wait is bounded (S7) and can be cancelled:
+   * a blocking connect() to an unreachable host held the line for minutes. */
+  { int fl = fcntl(sd, F_GETFL); if(fl >= 0) (void)fcntl(sd, F_SETFL, fl | O_NONBLOCK); }
+  if(timeout_s < 1) timeout_s = 1;
+  int rc = connect(sd, (struct sockaddr *)&pin, sizeof(pin));
+  if(rc == -1 && errno != EINPROGRESS && errno != EINTR) {
+    *why = (errno == ECONNREFUSED) ? IP_ERR_REFUSED : IP_ERR_OTHER;
     ELOG(LOG_ERROR, "could not connect to address");
     close(sd);
     return -1;
   }
+  if(rc == -1) {
+    int waited_ms = 0, done = 0;
+    while(!done) {
+      struct pollfd p; p.fd = sd; p.events = POLLOUT; p.revents = 0;
+      int pr = poll(&p, 1, 200);
+      if(pr > 0) { done = 1; break; }
+      if(pr < 0 && errno != EINTR) { done = -1; break; }
+      waited_ms += 200;
+      if(aborted && aborted(arg)) { LOG(LOG_INFO, "Call to %s cancelled", ip); *why = IP_ERR_ABORTED; close(sd); return -1; }
+      if(waited_ms >= timeout_s * 1000) { LOG(LOG_INFO, "No answer from %s after %d s", ip, timeout_s); *why = IP_ERR_TIMEOUT; close(sd); return -1; }
+    }
+    int soerr = 0; socklen_t sl = sizeof(soerr);
+    if(done < 0 || getsockopt(sd, SOL_SOCKET, SO_ERROR, &soerr, &sl) != 0 || soerr != 0) {
+      *why = (soerr == ECONNREFUSED) ? IP_ERR_REFUSED : (soerr == ETIMEDOUT ? IP_ERR_TIMEOUT : IP_ERR_OTHER);
+      LOG(LOG_ERROR, "could not connect to %s: %s", ip, soerr ? strerror(soerr) : "poll failed");
+      close(sd);
+      return -1;
+    }
+  }
+  ip_tune_socket(sd);
+  *why = IP_ERR_NONE;
   LOG(LOG_INFO, "Connection to %s established", ip);
   LOG_EXIT();
   return sd;
@@ -171,9 +241,11 @@ int ip_accept(int sSocket) {
                    &clientLength
                   );
   if (-1 == cSocket) {
-    ELOG(LOG_ERROR, "Could not accept incoming connection");
+    if(errno != EAGAIN && errno != EWOULDBLOCK && errno != ECONNABORTED)
+      ELOG(LOG_ERROR, "Could not accept incoming connection");
     return -1;
   }
+  ip_tune_socket(cSocket);
 
   if(-1 == getpeername(cSocket,
                         (struct sockaddr *)&clientName, 
@@ -203,27 +275,11 @@ int ip_accept_ex(int sSocket, char *peer_ip, int peer_ip_len) {
                    &clientLength
                   );
   if (-1 == cSocket) {
-    ELOG(LOG_ERROR, "Could not accept incoming connection");
+    if(errno != EAGAIN && errno != EWOULDBLOCK && errno != ECONNABORTED)
+      ELOG(LOG_ERROR, "Could not accept incoming connection");
     return -1;
   }
-
-  /* Keepalive helps clean up dead sessions (NAT timeouts, scanners, etc.) */
-  {
-    int on = 1;
-    (void)setsockopt(cSocket, SOL_SOCKET, SO_KEEPALIVE, &on, sizeof(on));
-#ifdef TCP_KEEPIDLE
-    int idle = TCPSER_KEEPIDLE;
-    (void)setsockopt(cSocket, IPPROTO_TCP, TCP_KEEPIDLE, &idle, sizeof(idle));
-#endif
-#ifdef TCP_KEEPINTVL
-    int intvl = TCPSER_KEEPINTVL;
-    (void)setsockopt(cSocket, IPPROTO_TCP, TCP_KEEPINTVL, &intvl, sizeof(intvl));
-#endif
-#ifdef TCP_KEEPCNT
-    int cnt = TCPSER_KEEPCNT;
-    (void)setsockopt(cSocket, IPPROTO_TCP, TCP_KEEPCNT, &cnt, sizeof(cnt));
-#endif
-  }
+  ip_tune_socket(cSocket);
 
   if(peer_ip && peer_ip_len > 0) {
     const char *saddr = inet_ntoa(clientName.sin_addr);

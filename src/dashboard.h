@@ -114,6 +114,7 @@ void dashboard_event(int type, unsigned char *data, int len);
 /* per-line state (idx = modem_config.idx) */
 void dashboard_line_init(int idx, const char *device, int speed, void *cfg);
 void dashboard_line_state(int idx, int connected, const char *peer_ip);
+void dashboard_line_bytes(int idx, long *in, long *out);
 void dashboard_line_closed(int idx);          /* records the history entry */
 void dashboard_line_dtr(int idx, int dtr);
 /* system event for the Events panel (printf-style, <= 79 chars kept) */

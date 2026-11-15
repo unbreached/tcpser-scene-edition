@@ -131,6 +131,7 @@ speed  = 38400
 | `TCPSER_ALLOWLIST` | `--allowlist` | IPs that skip blocklist, rate limit and gate | `tcpser.allowlist` in the working directory |
 | `TCPSER_DASH_BIND` | `--web-bind` | web console bind address | `127.0.0.1` |
 | `TCPSER_DASH_TOKEN` | `--web-token` | require `?token=…` once to sign in | none |
+| `TCPSER_DASH_HOST` | `--web-host` | host names accepted in `Host` when no token is set | IP addresses and `localhost` only |
 | `TCPSER_DASH_TRAFFIC` | `--web-traffic` | `1` = payload bytes in the traffic feed | off |
 | `TCPSER_DASH_NAME` | `--name` | BBS name in the web console | `TCPSER` |
 | `TCPSER_IP232_BIND` | `--ip232-bind` | bind address of the `-v` listener | `127.0.0.1` |
@@ -210,6 +211,7 @@ speed  = 38400
 | Option | Config key | Description |
 |--------|------------|-------------|
 | `-w`, `--watchdog SECONDS` | `watchdog` | BBS watchdog: toggle DTR if the BBS does not re-arm after a disconnect (default 120 s, 0 = off, max 600). |
+| `--answer-timeout SECONDS` | `answer-timeout` | How long the BBS may take to answer a ringing call before the caller gets the no-answer screen (default 10 s, max 120). With `S0=n` auto-answer the wait is extended to cover `n` rings. |
 | `-m`, `--max-session MINUTES` | `max-session` | Maximum session time in minutes (default 0 = unlimited). |
 
 **Monitoring / notify**
@@ -220,6 +222,7 @@ speed  = 38400
 | `-H`, `--web PORT` | `web` | Web console and Prometheus `/metrics` on `PORT`. Binds `127.0.0.1` unless `--web-bind` says otherwise. |
 | `--web-bind ADDR` | `web-bind` | Bind address of the web console (default `127.0.0.1`; expose only behind nginx + TLS). Also `TCPSER_DASH_BIND`. |
 | `--web-token TOKEN` | `web-token` | Require `?token=TOKEN` once to sign in to the web console (letters, digits, `-`, `_`, `.`). Prefer the environment variable: a token on the command line is visible in `ps`. Also `TCPSER_DASH_TOKEN`. |
+| `--web-host NAME[,NAME]` | `web-host` | Host names the web console answers to when no token is set (comma separated). Without a token it otherwise accepts only an IP address or `localhost` in the `Host` header, which stops DNS-rebinding attacks from web pages. Also `TCPSER_DASH_HOST`. |
 | `--web-traffic` | `web-traffic` | Include payload content in the web traffic feed (callers' keystrokes; keep it behind a token). Also `TCPSER_DASH_TRAFFIC`. |
 | `--name NAME` | `name` | BBS name shown in the web console header. Also `TCPSER_DASH_NAME`. |
 | `-e`, `--webhook URL` | `webhook` | Webhook URL for connection events (Discord, Slack, ntfy or plain JSON POST). Repeatable, up to 8. |

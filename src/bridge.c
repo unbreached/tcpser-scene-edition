@@ -15,6 +15,7 @@
 #include <fcntl.h>
 #include <errno.h>
 #include <dirent.h>
+#include <poll.h>
 
 #include "util.h"
 #include "debug.h"
@@ -40,28 +41,37 @@ const char MDM_NO_ANSWER[] = "NO ANSWER\n";
 typedef struct {
   char ip[INET_ADDRSTRLEN];
   int fails;
-  time_t blocked_until;
+  time_t blocked_until;       /* monotonic seconds; 0 = no timed block */
   int permanent;
-  time_t last_attempt;        /* for rate limiting */
+  time_t last_attempt;        /* monotonic; for rate limiting */
+  int fast_hits;              /* connects that tripped the rate limit, in a row */
 } ip_block_t;
 
 #define RATE_LIMIT_SECONDS 5  /* minimum seconds between attempts from same IP */
+#define FLOOD_HITS 5          /* this many rate-limited connects in a row ... */
+#define FLOOD_BLOCK_SECONDS 600 /* ... earn a timed block (not written to the file) */
 #define GATE_MAX_GUESSES_PER_CONN 3  /* wrong password tries before we drop the connection */
 /* ct_streq() (constant-time compare) now lives in util.c */
 
-#define MAX_BLOCKS 512
+/* The table grows on demand. It holds permanent blocks (mirrored in the
+ * blocklist file), timed blocks and rate-limit tracking. It used to be a
+ * fixed 512 slots: blocklist-file lines beyond that were silently ignored. */
+#define BLOCKS_INITIAL 512
+#define BLOCKS_LIMIT   65536
 static ip_block_t *g_blocks = NULL;
+static int g_blocks_cap = 0;
 static int g_blocks_inited = 0;
 static pthread_mutex_t g_blocks_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 static pthread_once_t blocks_once = PTHREAD_ONCE_INIT;
 
 static void init_blocks_once(void) {
-  g_blocks = (ip_block_t *)calloc(MAX_BLOCKS, sizeof(ip_block_t));
+  g_blocks = (ip_block_t *)calloc(BLOCKS_INITIAL, sizeof(ip_block_t));
   if (!g_blocks) {
     LOG(LOG_FATAL, "Could not allocate blocklist memory");
     exit(-1);
   }
+  g_blocks_cap = BLOCKS_INITIAL;
   g_blocks_inited = 1;
   LOG(LOG_DEBUG, "IP blocks initialized successfully");
 }
@@ -102,7 +112,7 @@ static time_t g_allow_mtime = 0;
 static pthread_mutex_t g_allow_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 static void allowlist_load_if_needed(void) {
-  time_t now = time(NULL);
+  time_t now = mono_now();
   if(g_allow_last_check != 0 && (now - g_allow_last_check) < 10) return;
   g_allow_last_check = now;
 
@@ -180,39 +190,16 @@ static void trim_line(char *s) {
 /* forward decl: blocklist loader uses it */
 static ip_block_t* find_or_alloc_ip(const char *ip);
 
+/* Append one IP to the blocklist file. The caller only does this when the IP
+ * was not already permanent in memory (which mirrors the file), so the file is
+ * not re-read to look for duplicates: that made every new ban cost a full scan
+ * of a file that a botnet can grow without limit. */
 static void blocklist_append_ip(const char *ip) {
   if(!ip || !ip[0]) return;
 
-  /* Avoid duplicates: scan the file quickly (with a shared lock). */
-  {
-    int rfd = open(blocklist_path(), O_RDONLY);
-    if(rfd >= 0) {
-      if(flock(rfd, LOCK_SH) == 0) {
-        FILE *rf = fdopen(rfd, "r");
-        if(rf) {
-          char line[256];
-          while(fgets(line, sizeof(line), rf)) {
-            trim_line(line);
-            if(line[0] == 0 || line[0] == '#') continue;
-            if(0 == strcmp(line, ip)) {
-              fclose(rf); /* also closes rfd */
-              return;
-            }
-          }
-          fclose(rf);
-          /* rfd closed */
-        } else {
-          close(rfd);
-        }
-      } else {
-        close(rfd);
-      }
-    }
-  }
-
-  /* Append under an exclusive lock. */
   int wfd = open(blocklist_path(), O_WRONLY | O_CREAT | O_APPEND, 0644);
   if(wfd < 0) return;
+  set_cloexec(wfd);
   if(flock(wfd, LOCK_EX) != 0) {
     close(wfd);
     return;
@@ -229,7 +216,7 @@ static void blocklist_append_ip(const char *ip) {
 
 static void blocklist_load_if_needed(void) {
   /* Reload at most every 10 seconds, and only if file mtime changes. */
-  time_t now = time(NULL);
+  time_t now = mono_now();
   if(g_blocklist_last_check != 0 && (now - g_blocklist_last_check) < 10) return;
   g_blocklist_last_check = now;
 
@@ -249,7 +236,7 @@ static void blocklist_load_if_needed(void) {
   g_blocklist_mtime = st.st_mtime;
 
   /* Authoritative reload: clear permanent flags before re-reading file. */
-  for(int i = 0; i < MAX_BLOCKS; i++) {
+  for(int i = 0; i < g_blocks_cap; i++) {
     if(g_blocks[i].ip[0] && g_blocks[i].permanent == TRUE) {
       g_blocks[i].permanent = FALSE;
     }
@@ -259,6 +246,7 @@ static void blocklist_load_if_needed(void) {
   if(!f) return;
 
   char line[256];
+  int skipped = 0;
   while(fgets(line, sizeof(line), f)) {
     trim_line(line);
     if(line[0] == 0) continue;
@@ -270,9 +258,11 @@ static void blocklist_load_if_needed(void) {
       e->permanent = TRUE;
       e->blocked_until = 0;
       e->fails = 0;
-    }
+    } else skipped++;
   }
   fclose(f);
+  if(skipped)
+    LOG(LOG_ERROR, "Blocklist file has more than %d entries: %d were NOT loaded and are not blocked", BLOCKS_LIMIT, skipped);
 }
 
 static ip_block_t* find_or_alloc_ip(const char *ip) {
@@ -280,7 +270,7 @@ static ip_block_t* find_or_alloc_ip(const char *ip) {
   int free_i = -1;
   int oldest_i = -1;
   time_t oldest_t = 0;
-  for(int i = 0; i < MAX_BLOCKS; i++) {
+  for(int i = 0; i < g_blocks_cap; i++) {
     if(g_blocks[i].ip[0] == 0 && free_i == -1) free_i = i;
     if(ip && ip[0] && 0 == strcmp(g_blocks[i].ip, ip)) return &g_blocks[i];
     /* Track the oldest non-permanent slot as an eviction candidate. */
@@ -293,26 +283,33 @@ static ip_block_t* find_or_alloc_ip(const char *ip) {
   }
   if(!ip || !ip[0]) return NULL;
 
+  if(free_i == -1 && g_blocks_cap < BLOCKS_LIMIT) {
+    /* grow (the mutex is held by every caller, so no pointer is live) */
+    int ncap = g_blocks_cap * 2;
+    ip_block_t *nb = (ip_block_t *)realloc(g_blocks, (size_t)ncap * sizeof(ip_block_t));
+    if(nb) {
+      memset(nb + g_blocks_cap, 0, (size_t)(ncap - g_blocks_cap) * sizeof(ip_block_t));
+      free_i = g_blocks_cap;
+      g_blocks = nb;
+      g_blocks_cap = ncap;
+    }
+  }
   if(free_i == -1) {
-    /* Table full. Evict the oldest timed/rate-limit entry so we keep tracking
-     * new offenders instead of silently default-allowing them. Permanent blocks
-     * are never evicted (they are also persisted to the blocklist file). */
+    /* At the hard limit. Evict the oldest timed/rate-limit entry so we keep
+     * tracking new offenders. Permanent blocks are never evicted. */
     if(oldest_i != -1) {
-      LOG(LOG_WARN, "IP blocklist full (%d), evicting oldest entry %s to track %s",
-          MAX_BLOCKS, g_blocks[oldest_i].ip, ip);
+      LOG(LOG_WARN, "IP table full (%d), evicting oldest entry %s to track %s",
+          g_blocks_cap, g_blocks[oldest_i].ip, ip);
       free_i = oldest_i;
     } else {
-      LOG(LOG_WARN, "IP blocklist full (%d, all permanent), cannot track %s",
-          MAX_BLOCKS, ip);
+      LOG(LOG_WARN, "IP table full (%d, all permanent), cannot track %s",
+          g_blocks_cap, ip);
       return NULL;
     }
   }
 
+  memset(&g_blocks[free_i], 0, sizeof(g_blocks[free_i]));
   snprintf(g_blocks[free_i].ip, sizeof(g_blocks[free_i].ip), "%s", ip);
-  g_blocks[free_i].fails = 0;
-  g_blocks[free_i].blocked_until = 0;
-  g_blocks[free_i].permanent = FALSE;
-  g_blocks[free_i].last_attempt = 0;
   return &g_blocks[free_i];
 }
 
@@ -324,7 +321,7 @@ static int ip_is_blocked(const char *ip) {
   ip_block_t *e = find_or_alloc_ip(ip);
   if(e) {
     if(e->permanent == TRUE) result = TRUE;
-    else if(e->blocked_until != 0 && time(NULL) < e->blocked_until) result = TRUE;
+    else if(e->blocked_until != 0 && mono_now() < e->blocked_until) result = TRUE;
   }
   pthread_mutex_unlock(&g_blocks_mutex);
   return result;
@@ -357,8 +354,8 @@ int blocklist_count(void) {
   pthread_mutex_lock(&g_blocks_mutex);
   ensure_blocks_init();
   blocklist_load_if_needed();
-  time_t now = time(NULL);
-  for(int i = 0; i < MAX_BLOCKS; i++) {
+  time_t now = mono_now();
+  for(int i = 0; i < g_blocks_cap; i++) {
     if(g_blocks[i].ip[0] == 0) continue;
     if(g_blocks[i].permanent) { count++; continue; }
     if(g_blocks[i].blocked_until != 0 && now < g_blocks[i].blocked_until) count++;
@@ -373,8 +370,8 @@ int blocklist_list(char buf[][16], int max) {
   pthread_mutex_lock(&g_blocks_mutex);
   ensure_blocks_init();
   blocklist_load_if_needed();
-  time_t now = time(NULL);
-  for(int i = 0; i < MAX_BLOCKS && count < max; i++) {
+  time_t now = mono_now();
+  for(int i = 0; i < g_blocks_cap && count < max; i++) {
     if(g_blocks[i].ip[0] == 0) continue;
     if(g_blocks[i].permanent ||
        (g_blocks[i].blocked_until != 0 && now < g_blocks[i].blocked_until)) {
@@ -392,13 +389,14 @@ int blocklist_list_ex(block_info_t *out, int max) {
   pthread_mutex_lock(&g_blocks_mutex);
   ensure_blocks_init();
   blocklist_load_if_needed();
-  time_t now = time(NULL);
-  for(int i = 0; i < MAX_BLOCKS && count < max; i++) {
+  time_t now = mono_now();
+  for(int i = 0; i < g_blocks_cap && count < max; i++) {
     if(g_blocks[i].ip[0] == 0) continue;
     if(g_blocks[i].permanent || (g_blocks[i].blocked_until != 0 && now < g_blocks[i].blocked_until)) {
       snprintf(out[count].ip, sizeof(out[count].ip), "%s", g_blocks[i].ip);
       out[count].permanent = g_blocks[i].permanent ? 1 : 0;
-      out[count].until = g_blocks[i].blocked_until;
+      /* blocked_until is on the monotonic clock; report wall-clock time */
+      out[count].until = g_blocks[i].permanent ? 0 : time(NULL) + (g_blocks[i].blocked_until - now);
       count++;
     }
   }
@@ -411,11 +409,12 @@ int blocklist_unblock_all_timed(void) {
   int cleared = 0;
   pthread_mutex_lock(&g_blocks_mutex);
   ensure_blocks_init();
-  for(int i = 0; i < MAX_BLOCKS; i++) {
+  for(int i = 0; i < g_blocks_cap; i++) {
     if(g_blocks[i].ip[0] && !g_blocks[i].permanent && g_blocks[i].blocked_until != 0) {
       g_blocks[i].ip[0] = 0;
       g_blocks[i].blocked_until = 0;
       g_blocks[i].fails = 0;
+      g_blocks[i].fast_hits = 0;
       cleared++;
     }
   }
@@ -429,12 +428,15 @@ int blocklist_unblock_all_timed(void) {
  * a stack-local buffer (thread-safe — no shared state) and flush in a single
  * ip_write(). Callers flush at each pacing usleep so the "typing" effect and
  * exact byte order are preserved. */
-typedef struct { int fd; int len; unsigned char buf[1024]; } obuf_t;
+typedef struct { int fd; int len; int failed; unsigned char buf[1024]; } obuf_t;
 
-static void ob_init(obuf_t *o, int fd) { o->fd = fd; o->len = 0; }
+static void ob_init(obuf_t *o, int fd) { o->fd = fd; o->len = 0; o->failed = 0; }
 
 static void ob_flush(obuf_t *o) {
-  if(o->len > 0) { (void)ip_write(o->fd, o->buf, o->len); o->len = 0; }
+  /* after one failed write (peer gone / not reading) stop trying: each further
+   * attempt could wait for the send timeout again */
+  if(o->len > 0 && !o->failed && ip_write(o->fd, o->buf, o->len) < 0) o->failed = 1;
+  o->len = 0;
 }
 
 static void ob_byte(obuf_t *o, unsigned char b) {
@@ -602,57 +604,54 @@ static void send_access_granted(modem_config *cfg, int fd, int delay_us) {
 
 
 
-// Very small telnet filter so a real telnet client can still satisfy the gate.
-// We ignore IAC negotiation and subnegotiation sequences.
-static int gate_consume_telnet(unsigned char *buf, int len, unsigned char *out, int out_max) {
-  int i = 0;
-  int o = 0;
-  int in_sb = 0;
+/* ---- pre-connect phase: banner, gate, baud menu --------------------------
+ * Runs in its own thread per call (gate_thread) so the line's bridge thread
+ * keeps serving the C64, DTR and the dashboards while a caller (or a bot)
+ * sits in the gate. It used to run on the bridge thread: AT commands from the
+ * BBS waited for the whole gate timeout. While it runs, this thread owns the
+ * caller socket; the bridge thread never closes it (see mdm_hangup). */
+typedef struct { modem_config *cfg; int fd; unsigned gen; } gate_ctx;
 
-  while(i < len && o < out_max) {
-    unsigned char ch = buf[i++];
-    if(in_sb) {
-      // swallow until IAC SE
-      if(ch == 0xff && i < len) {
-        unsigned char next = buf[i];
-        if(next == 0xf0) { // SE
-          i++;
-          in_sb = 0;
-        }
-      }
-      continue;
+enum { GATE_FAIL = 0, GATE_PASS = 1, GATE_GONE = 2 };
+
+/* Wait for caller input until deadline_ms (monotonic). Input goes through the
+ * line's telnet parser, so a telnet client's opening negotiation is answered
+ * and remembered instead of being thrown away (which left the whole call in
+ * raw mode). Returns the number of data bytes in out (0 = only negotiation
+ * arrived), -1 on timeout, -2 if the caller is gone or the gate was cancelled. */
+static int gate_read(gate_ctx *g, long long deadline_ms, unsigned char *out) {
+  for(;;) {
+    long long left = deadline_ms - mono_ms();
+    if(g->cfg->gate_abort) return -2;
+    if(left <= 0) return -1;
+    struct pollfd p; p.fd = g->fd; p.events = POLLIN; p.revents = 0;
+    int rc = poll(&p, 1, left > 500 ? 500 : (int)left);
+    if(rc < 0 && errno == EINTR) continue;   /* a signal is not a timeout */
+    if(rc < 0) return -2;
+    if(rc == 0) continue;
+
+    unsigned char in[256];
+    int n = ip_read(g->fd, in, sizeof(in));
+    if(n == 0) return -2;                    /* peer closed */
+    if(n < 0) {
+      if(errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) continue;
+      return -2;
     }
-
-    if(ch == 0xff) { // IAC
-      if(i >= len) break;
-      unsigned char cmd = buf[i++];
-      if(cmd == 0xfa) { // SB
-        in_sb = 1;
-        continue;
-      }
-      // WILL/WONT/DO/DONT have 1 option byte
-      if((cmd == 251 || cmd == 252 || cmd == 253 || cmd == 254) && i < len) {
-        i++;
-      }
-      continue;
-    }
-
-    out[o++] = ch;
+    int m = line_filter(&g->cfg->line_data, &g->cfg->dce_data, g->gen, 0, in, n, out);
+    if(m < 0) return -2;
+    return m;
   }
-  return o;
 }
 
-static int preconnect_gate(modem_config *cfg) {
-  int fd = cfg->line_data.fd;
+static int preconnect_gate(gate_ctx *g) {
+  modem_config *cfg = g->cfg;
+  int fd = g->fd;
   int timeout = cfg->gate_timeout > 0 ? cfg->gate_timeout : 20;
-  struct timeval start, now;
-  gettimeofday(&start, NULL);
+  long long deadline = mono_ms() + (long long)timeout * 1000;
 
-  if(cfg->gate_mode == 0) return TRUE;
+  if(cfg->gate_mode == 0) return GATE_PASS;
 
-  if(cfg->gate_mode == 1) {
-   // preconnect_write(fd, "Press BACKSPACE twice to launch the BBS...\r\n");
-  } else if(cfg->gate_mode == 2) {
+  if(cfg->gate_mode == 2) {
     preconnect_write(fd, "enter code: ");
   }
 
@@ -672,29 +671,10 @@ static int preconnect_gate(modem_config *cfg) {
   norm_str_inplace(pwcfg);
 
   while(TRUE) {
-    gettimeofday(&now, NULL);
-    int elapsed = (int)(now.tv_sec - start.tv_sec);
-    int remaining = timeout - elapsed;
-    if(remaining <= 0) break;
-
-    fd_set readfs;
-    FD_ZERO(&readfs);
-    FD_SET(fd, &readfs);
-    struct timeval tv;
-    tv.tv_sec = remaining;
-    tv.tv_usec = 0;
-
-    int rc = select(fd + 1, &readfs, NULL, NULL, &tv);
-    if(rc < 0 && errno == EINTR) continue;   /* a signal is not a timeout */
-    if(rc <= 0) break; // timeout or error
-    if(!FD_ISSET(fd, &readfs)) continue;
-
-    unsigned char inbuf[256];
-    int n = ip_read(fd, inbuf, sizeof(inbuf));
-    if(n <= 0) return FALSE; // peer closed
-
-    unsigned char filtered[256];
-    int m = gate_consume_telnet(inbuf, n, filtered, sizeof(filtered));
+    unsigned char filtered[260];
+    int m = gate_read(g, deadline, filtered);
+    if(m == -1) break;            /* timeout */
+    if(m < 0) return GATE_FAIL;   /* peer closed */
 
     for(int i = 0; i < m; i++) {
       unsigned char ch = filtered[i];
@@ -705,7 +685,7 @@ static int preconnect_gate(modem_config *cfg) {
           esc_count++;
           if(esc_count >= 2) {
             send_access_granted(cfg, fd, 400000);
-            return TRUE;
+            return GATE_PASS;
           }
         }
       } else if(cfg->gate_mode == 2) {
@@ -715,13 +695,13 @@ static int preconnect_gate(modem_config *cfg) {
             norm_str_inplace(pwbuf);
             if(ct_streq(pwbuf, pwcfg)) {
               send_access_granted(cfg, fd, 700000);
-              return TRUE;
+              return GATE_PASS;
             }
             /* Non-empty wrong password counts as a guess. */
             wrong_guesses++;
             if(wrong_guesses >= GATE_MAX_GUESSES_PER_CONN) {
               preconnect_write(fd, "\r\nToo many attempts. Disconnecting.\r\n");
-              return FALSE;
+              return GATE_FAIL;
             }
             /* Throttle: slow down intra-connection brute force. */
             usleep(1500000);
@@ -743,7 +723,7 @@ static int preconnect_gate(modem_config *cfg) {
   }
 
   preconnect_write(fd, "\r\nTimeout. Disconnecting.\r\n");
-  return FALSE;
+  return GATE_FAIL;
 }
 /* Launch a script securely after a successful gate.
  * Scripts must be in TCPSER_SCRIPT_DIR and follow naming restrictions.
@@ -777,16 +757,15 @@ static void run_gate_success_script(modem_config *cfg) {
       break;
   }
 }
-/* On-connect caller baud selection (-b).
- * Shows the TCP caller a numbered speed menu; on a valid pick, sends
- * "POKE 838,<val>" to the C64 (CBase executes it from its input stream) and
- * retunes tcpser's own serial port to match, so the session runs at that speed.
- * Best-effort: on timeout, peer close, or invalid input the current speed is
- * kept. Runs before ringing, while both sides still agree on the old speed. */
-static void baud_select_menu(modem_config *cfg) {
-  int fd = cfg->line_data.fd;
+/* On-connect caller baud selection (-b), part 1 (gate thread): show the TCP
+ * caller a numbered speed menu and wait up to 20 s for a digit.
+ * Returns the chosen index, -1 for "keep the current speed", -2 if the caller
+ * is gone. */
+static int baud_menu_ask(gate_ctx *g) {
+  modem_config *cfg = g->cfg;
+  int fd = g->fd;
 
-  if(!cfg->baud_menu_enabled || cfg->baud_menu_count <= 0) return;
+  if(!cfg->baud_menu_enabled || cfg->baud_menu_count <= 0) return -1;
 
   /* Build and send the menu over TCP */
   {
@@ -801,45 +780,31 @@ static void baud_select_menu(modem_config *cfg) {
     preconnect_write(fd, menu);
   }
 
-  /* Wait up to 20s for a single-digit selection */
-  int timeout = 20;
-  struct timeval start, now;
-  gettimeofday(&start, NULL);
-  int chosen = -1;
-
-  while(chosen < 0) {
-    gettimeofday(&now, NULL);
-    int remaining = timeout - (int)(now.tv_sec - start.tv_sec);
-    if(remaining <= 0) break;
-
-    fd_set readfs;
-    FD_ZERO(&readfs);
-    FD_SET(fd, &readfs);
-    struct timeval tv;
-    tv.tv_sec = remaining;
-    tv.tv_usec = 0;
-
-    int rc = select(fd + 1, &readfs, NULL, NULL, &tv);
-    if(rc < 0 && errno == EINTR) continue;   /* a signal is not a timeout */
-    if(rc <= 0) break;
-    if(!FD_ISSET(fd, &readfs)) continue;
-
-    unsigned char inbuf[256];
-    int n = ip_read(fd, inbuf, sizeof(inbuf));
-    if(n <= 0) return; /* peer closed — caller is gone */
-
-    unsigned char filtered[256];
-    int m = gate_consume_telnet(inbuf, n, filtered, sizeof(filtered));
+  long long deadline = mono_ms() + 20000;
+  for(;;) {
+    unsigned char filtered[260];
+    int m = gate_read(g, deadline, filtered);
+    if(m == -1) return -1;
+    if(m < 0) return -2;
     for(int i = 0; i < m; i++) {
       unsigned char ch = filtered[i];
       if(ch >= '1' && ch <= '9') {
         int idx = ch - '1';
-        if(idx < cfg->baud_menu_count) { chosen = idx; break; }
+        if(idx < cfg->baud_menu_count) return idx;
       }
     }
   }
+}
 
-  if(chosen < 0) {
+/* Baud selection, part 2 (bridge thread, which owns the serial port): send
+ * "POKE 838,<val>" to the C64 (CBase executes it from its input stream) and
+ * retune tcpser's own serial port to match, so the session runs at that
+ * speed. Runs before ringing, while both sides still agree on the old speed. */
+static void baud_menu_apply(modem_config *cfg, int chosen) {
+  int fd = cfg->line_data.fd;
+
+  if(!cfg->baud_menu_enabled || cfg->baud_menu_count <= 0) return;
+  if(chosen < 0 || chosen >= cfg->baud_menu_count) {
     preconnect_write(fd, "\r\nKeeping current speed.\r\n");
     LOG(LOG_INFO, "Baud menu: no valid selection, keeping %d baud",
         cfg->dce_data.port_speed);
@@ -890,9 +855,41 @@ static void baud_select_menu(modem_config *cfg) {
   }
 }
 
+static void *gate_thread(void *arg) {
+  gate_ctx *g = (gate_ctx *)arg;
+  modem_config *cfg = g->cfg;
+  int result = GATE_PASS;
+  int baud = -1;
+
+  if(!cfg->gate_trusted) {
+    // 1) banner immediately upon TCP accept (BEFORE any serial/modem traffic)
+    send_preconnect_banner(cfg);
+    // 2) optional bot gate
+    result = preconnect_gate(g);
+  }
+  if(result == GATE_PASS) {
+    baud = baud_menu_ask(g);
+    if(baud == -2) result = GATE_GONE;
+  }
+  cfg->gate_baud = baud;
+  cfg->gate_result = result;
+  writePipe(cfg->cp[0][1], MSG_GATE_DONE);   /* the bridge thread takes over */
+  free(g);
+  return NULL;
+}
+
+/* MSG_CALLING: take the TCP connection, apply the instant checks (blocklist,
+ * rate limit) and hand the caller to a gate thread. */
 int accept_connection(modem_config *cfg) {
   LOG_ENTER();
 
+  if(cfg->line_data.is_connected == TRUE || cfg->dial_pending || cfg->gate_pending) {
+    /* raced with our own state change after main picked us: leave the
+     * connection queued, main will route it again */
+    writePipe(cfg->mp[0][1], MSG_BUSY);
+    LOG_EXIT();
+    return 0;
+  }
   if(-1 == line_accept(&cfg->line_data)) {
     /* Accept failed — still release the parent's accept gate so it can resume
      * (otherwise accept_pending would stay set and freeze every port). */
@@ -902,28 +899,19 @@ int accept_connection(modem_config *cfg) {
   }
 
   /* The TCP connection is now ours (cfg->line_data.fd, is_connected == TRUE).
-   * Release the global accept gate IMMEDIATELY, before the slow banner/gate,
-   * so a single silent caller can no longer freeze every port/modem for the
-   * full gate timeout (cheapest remote DoS). The parent only routes new calls
-   * to modems whose line is not already connected, so it won't re-route to us
-   * while we run the gate. */
+   * Release the global accept gate IMMEDIATELY. The parent only routes new
+   * calls to modems whose line is not already connected, so it won't re-route
+   * to us while the gate runs. */
   writePipe(cfg->mp[0][1], MSG_BUSY);
 
-  {
-    int is_trusted;
-    dashboard_stat_connection(cfg->line_data.peer_ip);
+  snprintf(cfg->last_peer, sizeof(cfg->last_peer), "%s", cfg->line_data.peer_ip);
+  dashboard_stat_connection(cfg->line_data.peer_ip);
 
-    /* Allowlisted IPs skip blocklist, rate limit, and gate */
-    is_trusted = ip_is_allowed(cfg->line_data.peer_ip);
-    if(is_trusted) {
-      LOG(LOG_INFO, "Allowlisted IP %s — skipping gate", cfg->line_data.peer_ip);
-      connlog_event(cfg->line_data.peer_ip, CONNLOG_CONNECTED);
-      dashboard_stat_gate(1, cfg->line_data.peer_ip);
-      dashboard_line_state(cfg->idx, 1, cfg->line_data.peer_ip);
-      run_gate_success_script(cfg);
-      goto start_ringing;
-    }
-
+  /* Allowlisted IPs skip blocklist, rate limit, and gate */
+  int is_trusted = ip_is_allowed(cfg->line_data.peer_ip);
+  if(is_trusted) {
+    LOG(LOG_INFO, "Allowlisted IP %s — skipping gate", cfg->line_data.peer_ip);
+  } else {
     /* Drop immediately if blocked (no banner, no gate, no serial) */
     if(ip_is_blocked(cfg->line_data.peer_ip)) {
       LOG(LOG_INFO, "Blocked IP %s tried to connect", cfg->line_data.peer_ip);
@@ -934,20 +922,33 @@ int accept_connection(modem_config *cfg) {
       return 0;
     }
 
-    /* Rate limit: enforce minimum delay between attempts from same IP */
+    /* Rate limit: enforce minimum delay between attempts from same IP. An IP
+     * that keeps hammering (FLOOD_HITS rate-limited connects in a row) gets a
+     * timed block: it is then dropped by the check above without touching
+     * this code, and the block shows on the dashboards, where it can be
+     * cleared. Timed blocks are not written to the blocklist file. */
     {
       pthread_mutex_lock(&g_blocks_mutex);
       ensure_blocks_init();
       ip_block_t *rl = find_or_alloc_ip(cfg->line_data.peer_ip);
-      int too_fast = 0;
+      int too_fast = 0, flood = 0;
       if(rl) {
-        time_t now = time(NULL);
+        time_t now = mono_now();
         if(rl->last_attempt > 0 && (now - rl->last_attempt) < RATE_LIMIT_SECONDS) {
           too_fast = 1;
-        }
+          if(++rl->fast_hits >= FLOOD_HITS) {
+            rl->fast_hits = 0;
+            rl->blocked_until = now + FLOOD_BLOCK_SECONDS;
+            flood = 1;
+          }
+        } else rl->fast_hits = 0;
         rl->last_attempt = now;
       }
       pthread_mutex_unlock(&g_blocks_mutex);
+      if(flood) {
+        LOG(LOG_WARN, "IP %s is flooding the line; blocked for %d minutes", cfg->line_data.peer_ip, FLOOD_BLOCK_SECONDS / 60);
+        dashboard_note("blocked %s for %d min (connection flood)", cfg->line_data.peer_ip, FLOOD_BLOCK_SECONDS / 60);
+      }
       if(too_fast) {
         LOG(LOG_INFO, "Rate limited IP %s (too fast)", cfg->line_data.peer_ip);
         dashboard_stat_blocked(cfg->line_data.peer_ip);
@@ -957,177 +958,95 @@ int accept_connection(modem_config *cfg) {
         return 0;
       }
     }
-
-    // 1) Send banner immediately upon TCP accept (still BEFORE serial/modem traffic)
-    send_preconnect_banner(cfg);
-
-    // 2) Optional bot gate (still BEFORE serial/modem traffic)
-    if(preconnect_gate(cfg) == FALSE) {
-      /* copy the IP first: line_disconnect() clears peer_ip, and the fail2ban
-       * filter (samples/fail2ban) keys on this log line */
-      char peer[INET_ADDRSTRLEN]; snprintf(peer, sizeof(peer), "%s", cfg->line_data.peer_ip);
-      dashboard_stat_gate(0, peer);
-      connlog_event(peer, CONNLOG_GATE_FAIL);
-      webhook_notify("GATE_FAIL", peer);
-      ip_note_fail(peer, cfg->gate_max_fails, 600);
-      line_disconnect(&cfg->line_data);
-      LOG(LOG_INFO, "Pre-connect gate failed for %s; disconnected before touching serial", peer);
-      LOG_EXIT();
-      return 0;
-    }
-
-    // 3) Gate passed: run optional external hook (non-blocking)
-    dashboard_stat_gate(1, cfg->line_data.peer_ip);
-    connlog_event(cfg->line_data.peer_ip, CONNLOG_CONNECTED);
-    dashboard_line_state(cfg->idx, 1, cfg->line_data.peer_ip);
-    run_gate_success_script(cfg);
-
-start_ringing:
-    /* On-connect caller baud selection (-b): let the caller choose the
-     * C64<->tcpser link speed before the BBS session starts. No-op unless -b
-     * was given. Both gated and allowlisted callers reach this. */
-    baud_select_menu(cfg);
-
-    // 4) Start a short answer timer so scanners don't hold the line forever.
-    cfg->incoming_waiting_answer = TRUE;
-    cfg->incoming_answer_deadline = time(NULL) + (cfg->incoming_answer_timeout > 0 ? cfg->incoming_answer_timeout : 10);
-    LOG(LOG_INFO, "Gate passed for %s; waiting for local answer (%ds)",
-        cfg->line_data.peer_ip, (cfg->incoming_answer_timeout > 0 ? cfg->incoming_answer_timeout : 10));
-
-    /* Set grace period NOW so DTR drops during RING phase are ignored */
-    cfg->conn_established = time(NULL);
-
-    if(cfg->direct_conn == TRUE) {
-      cfg->conn_type = MDM_CONN_INCOMING;
-      mdm_off_hook(cfg);
-    } else {
-      cfg->rings = 0;
-      mdm_send_ring(cfg);
-    }
-    /* Note: the parent's accept gate was already released right after
-     * line_accept() above, so there is no MSG_BUSY to send here. */
   }
+
+  gate_ctx *g = (gate_ctx *)calloc(1, sizeof(*g));
+  if(!g) { line_disconnect(&cfg->line_data); LOG_EXIT(); return 0; }
+  g->cfg = cfg;
+  g->fd = cfg->line_data.fd;
+  g->gen = cfg->line_data.gen;
+  cfg->gate_trusted = is_trusted;
+  cfg->gate_abort = FALSE;
+  cfg->gate_baud = -1;
+  cfg->gate_pending = TRUE;
+  spawn_thread((void *)gate_thread, (void *)g, "GATE");
   LOG_EXIT();
   return 0;
 }
 
-int parse_ip_data(modem_config *cfg, unsigned char *data, int len) {
-  // I'm going to cheat and assume it comes in chunks.
-  int i = 0;
-  unsigned char ch;
-  /* Accumulates text until TEXT_CHUNK bytes, then flushes. Every append path
-   * flushes at exactly TEXT_CHUNK, so text_len never exceeds it; the explicit
-   * clamps below make that invariant visible to the compiler (GCC's
-   * -Warray-bounds could not prove it through the >= test) and keep the
-   * terminator in bounds even if a two-byte append is added later. */
-  enum { TEXT_CHUNK = 1024 };
-  unsigned char text[TEXT_CHUNK + 1];
-  int text_len = 0;
+/* MSG_GATE_DONE: the gate thread is finished with the caller. */
+static void gate_finish(modem_config *cfg) {
+  if(!cfg->gate_pending) return;
+  cfg->gate_pending = FALSE;
+  /* the reader thread takes over watching the socket (it leaves it alone
+   * while the gate thread owns it): make it look again */
+  writePipe(cfg->cp[1][1], MSG_NOTIFY);
 
-  if(cfg->line_data.is_data_received == FALSE) {
-    cfg->line_data.is_data_received = TRUE;
-    if((data[0] == 0xff) || (data[0] == 0x1a)) {
-      LOG(LOG_INFO, "Detected telnet client");
-      cfg->line_data.is_telnet = TRUE;
-      /* Send full RFC 854 proactive negotiation batch:
-       * WILL ECHO, WILL/DO SGA, DO NAWS, DO TERMINAL_TYPE, binary mode.
-       * This handles Linux telnet, PuTTY, SyncTERM, CGTerm, etc. */
-      nvt_negotiate_proactive(cfg->line_data.fd, &cfg->line_data.nvt_data);
-    }
+  /* copy the IP first: line_disconnect() clears peer_ip, and the fail2ban
+   * filter (samples/fail2ban) keys on the log line below */
+  char peer[INET_ADDRSTRLEN];
+  snprintf(peer, sizeof(peer), "%s", cfg->line_data.peer_ip);
+
+  if(cfg->gate_abort || cfg->gate_result == GATE_GONE) {
+    /* we cancelled it (operator hangup, shutdown), or the caller left during
+     * the baud menu: no strike */
+    LOG(LOG_INFO, "Pre-connect phase ended for %s before the call was put through", peer);
+    line_disconnect(&cfg->line_data);
+    return;
+  }
+  if(cfg->gate_result != GATE_PASS) {
+    dashboard_stat_gate(0, peer);
+    connlog_event(peer, CONNLOG_GATE_FAIL);
+    webhook_notify("GATE_FAIL", peer);
+    ip_note_fail(peer, cfg->gate_max_fails, 600);
+    line_disconnect(&cfg->line_data);
+    LOG(LOG_INFO, "Pre-connect gate failed for %s; disconnected before touching serial", peer);
+    return;
   }
 
-  if(cfg->line_data.is_telnet == TRUE) {
-    /* Binary mode: if parity is set, retract binary offer.
-     * Proactive negotiation already sent WILL/DO BINARY, so we only
-     * need to send WONT/DONT if the connection isn't 8-bit clean. */
-    if(cfg->is_binary_negotiated == FALSE) {
-      if(dce_get_parity(&cfg->dce_data)) {
-        LOG(LOG_INFO, "Telnet: parity set, retracting binary mode");
-        send_nvt_command(cfg->line_data.fd,
-                         &cfg->line_data.nvt_data,
-                         NVT_WONT,
-                         NVT_OPT_TRANSMIT_BINARY
-                        );
-        send_nvt_command(cfg->line_data.fd,
-                         &cfg->line_data.nvt_data,
-                         NVT_DONT,
-                         NVT_OPT_TRANSMIT_BINARY
-                        );
-      }
-      cfg->is_binary_negotiated = TRUE;
-    }
-    while(i < len) {
-      ch = data[i];
-      if(NVT_IAC == ch) {
-        // Ensure we don't read past the end on truncated IAC sequences
-        if (i + 1 >= len) {
-          break;
-        }
-        ch = data[i + 1];
-        switch(ch) {
-          case NVT_WILL:
-          case NVT_DO:
-          case NVT_WONT:
-          case NVT_DONT:
-            // Ensure option byte exists
-            if (i + 2 >= len) {
-              i = len;
-              break;
-            }
-            LOG(LOG_INFO, "Parsing nvt command");
-            parse_nvt_command(&cfg->dce_data,
-                              cfg->line_data.fd,
-                              &cfg->line_data.nvt_data,
-                              ch,
-                              data[i + 2]
-                             );
-            i += 3;
-            break;
-          case NVT_SB:      // sub negotiation
-            // again, overflow...
-            i += parse_nvt_subcommand(&cfg->dce_data, 
-                                      cfg->line_data.fd, 
-                                      &cfg->line_data.nvt_data, 
-                                      data + i, 
-                                      len - i
-                                     );
-            break;
-          case NVT_IAC:
-            if (cfg->line_data.nvt_data.binary_recv) {
-              if (text_len >= TEXT_CHUNK) {
-                text_len = TEXT_CHUNK;
-                text[text_len] = 0;
-                dce_write(&cfg->dce_data, text, text_len);
-                text_len = 0;
-              }
-              text[text_len++] = NVT_IAC;
-            }
-            /* fall through */
-          default:
-            // ignore...
-            i += 2;
-        }
-      } else {
-        text[text_len++] = data[i++];
-      }
-      if(text_len >= TEXT_CHUNK) {
-        text_len = TEXT_CHUNK;
-        text[text_len] = 0;
-        // write to serial...
-        mdm_write(cfg, text, text_len);
-        text_len = 0;
-      }
-    }
-    if(text_len > 0) {
-      if(text_len > TEXT_CHUNK) text_len = TEXT_CHUNK;
-      text[text_len] = 0;
-      // write to serial...
-      mdm_write(cfg, text, text_len);
-    }
+  // 3) Gate passed: run optional external hook (non-blocking)
+  dashboard_stat_gate(1, peer);
+  connlog_event(peer, CONNLOG_CONNECTED);
+  dashboard_line_state(cfg->idx, 1, peer);
+  run_gate_success_script(cfg);
+
+  /* On-connect caller baud selection (-b): apply the caller's choice. */
+  baud_menu_apply(cfg, cfg->gate_baud);
+
+  // 4) Start an answer timer so scanners don't hold the line forever. A BBS
+  //    that auto-answers on ring S0 needs (S0 - 1) * 4 s just to get there.
+  int wait = cfg->incoming_answer_timeout > 0 ? cfg->incoming_answer_timeout : 10;
+  if(cfg->s[S_REG_RINGS] > 0 && cfg->s[S_REG_RINGS] * 4 + 2 > wait) wait = cfg->s[S_REG_RINGS] * 4 + 2;
+  cfg->incoming_waiting_answer = TRUE;
+  cfg->incoming_answer_deadline = mono_now() + wait;
+  LOG(LOG_INFO, "Gate passed for %s; waiting for local answer (%ds)", peer, wait);
+
+  /* Set grace period NOW so DTR drops during RING phase are ignored */
+  cfg->conn_established = mono_now();
+
+  if(cfg->direct_conn == TRUE) {
+    cfg->conn_type = MDM_CONN_INCOMING;
+    mdm_off_hook(cfg);
   } else {
-    mdm_write(cfg, data, len);
+    cfg->rings = 0;
+    mdm_send_ring(cfg);
   }
-  return 0;
+}
+
+/* Bytes from the network: through the telnet parser, then to the C64. gen is
+ * the line generation the bytes were read under; if the call ended meanwhile
+ * they are dropped rather than applied to the next caller. */
+static void parse_ip_data(modem_config *cfg, unsigned gen, unsigned char *data, int len) {
+  unsigned char out[260];
+
+  if(len > 257) len = 257;
+  int n = line_filter(&cfg->line_data, &cfg->dce_data, gen, 1, data, len, out);
+  if(n > 0) mdm_write(cfg, out, n);
+}
+
+static void post_disconnect(modem_config *cfg, unsigned gen) {
+  cfg->disc_gen = gen;
+  writePipe(cfg->cp[0][1], MSG_DISCONNECT);
 }
 
 void *ip_thread(void *arg) {
@@ -1142,50 +1061,63 @@ void *ip_thread(void *arg) {
 
   LOG_ENTER();
   while(TRUE) {
+    /* One snapshot per pass: the bridge thread can disconnect at any moment,
+     * and re-reading fd after the check could hand select() a -1 (which
+     * aborts under glibc's fortify) or the next caller's descriptor. */
+    int fd = cfg->line_data.fd;
+    unsigned gen = cfg->line_data.gen;
+    int connected = (cfg->line_data.is_connected == TRUE) && fd > -1 && fd < FD_SETSIZE;
+    int data_mode = cfg->conn_type != MDM_CONN_NONE && cfg->is_cmd_mode == FALSE;
+    int watch = !action_pending && connected && data_mode;
+    /* Not in data mode (ringing, or online command mode after +++): nobody
+     * reads the socket, so a caller who leaves would go unnoticed. Look once
+     * a second. Not while the gate thread owns the socket. */
+    int peek = !action_pending && connected && !data_mode && !cfg->gate_pending;
+    struct timeval tv;
+
     FD_ZERO(&readfs);
     FD_SET(cfg->cp[1][0], &readfs);
     max_fd = cfg->cp[1][0];
-    if(action_pending == FALSE
-       && cfg->conn_type != MDM_CONN_NONE
-       && cfg->is_cmd_mode == FALSE
-       && cfg->line_data.fd > -1
-       && cfg->line_data.is_connected == TRUE
-      ) {
-      FD_SET(cfg->line_data.fd, &readfs); 
-      max_fd=MAX(max_fd, cfg->line_data.fd);
+    if(watch) {
+      FD_SET(fd, &readfs);
+      max_fd=MAX(max_fd, fd);
     }
     max_fd++;
-    rc = select(max_fd, &readfs, NULL, NULL, NULL);
+    tv.tv_sec = 1; tv.tv_usec = 0;
+    rc = select(max_fd, &readfs, NULL, NULL, peek ? &tv : NULL);
     if(rc == -1) {
-      ELOG(LOG_WARN, "Select returned error");
-      // handle error
-    } else {
-      // we got data
-      if (cfg->line_data.is_connected == TRUE && FD_ISSET(cfg->line_data.fd, &readfs)) {  // socket
-        LOG(LOG_DEBUG, "Data available on socket");
-        /* Read at most sizeof(buf)-1 so the NUL terminator written below
-         * (buf[res] = 0) always lands inside the buffer. Reading the full
-         * sizeof(buf) let a 258-byte recv() make buf[258] a 1-byte stack
-         * overflow — this fires exactly when a client (e.g. CGTerm) has
-         * >= 258 bytes buffered at answer time. */
-        res = line_read(&cfg->line_data, buf, sizeof(buf) - 1);
-        //res = recv(cfg->line_data.fd, buf, sizeof(buf), 0);
-        if(0 >= res) {
-          LOG(LOG_INFO, "No socket data read, assume closed peer");
-          writePipe(cfg->cp[0][1], MSG_DISCONNECT);
+      /* EBADF when the descriptor was closed under us: re-snapshot, no spin */
+      if(errno != EINTR) usleep(10000);
+      continue;
+    }
+    if(watch && FD_ISSET(fd, &readfs)) {  // socket
+      LOG(LOG_DEBUG, "Data available on socket");
+      /* Read at most sizeof(buf)-1 so there is room for a terminator. */
+      res = ip_read(fd, buf, sizeof(buf) - 1);
+      if(res == 0 || (res < 0 && errno != EINTR && errno != EAGAIN && errno != EWOULDBLOCK)) {
+        LOG(LOG_INFO, "No socket data read, assume closed peer");
+        post_disconnect(cfg, gen);
+        action_pending = TRUE;
+      } else if(res > 0) {
+        LOG(LOG_DEBUG, "Read %d bytes from socket", res);
+        buf[res] = 0;
+        parse_ip_data(cfg, gen, buf, res);
+      }
+    } else if(peek && rc == 0) {
+      unsigned char c;
+      ssize_t r = recv(fd, &c, 1, MSG_PEEK | MSG_DONTWAIT);
+      if(r == 0 || (r < 0 && errno != EINTR && errno != EAGAIN && errno != EWOULDBLOCK)) {
+        if(cfg->line_data.gen == gen) {
+          LOG(LOG_INFO, "Caller closed the connection while not in data mode");
+          post_disconnect(cfg, gen);
           action_pending = TRUE;
-        } else {
-          LOG(LOG_DEBUG, "Read %d bytes from socket", res);
-          buf[res] = 0;
-          parse_ip_data(cfg, buf, res);
         }
       }
-      if (FD_ISSET(cfg->cp[1][0], &readfs)) {  // pipe
-
-        res = readPipe(cfg->cp[1][0], buf, sizeof(buf) - 1);
-        LOG(LOG_DEBUG, "IP thread notified");
-        action_pending = FALSE;
-      }
+    }
+    if (FD_ISSET(cfg->cp[1][0], &readfs)) {  // pipe
+      res = readPipe(cfg->cp[1][0], buf, sizeof(buf) - 1);
+      LOG(LOG_DEBUG, "IP thread notified");
+      action_pending = FALSE;
     }
   }
   LOG_EXIT();
@@ -1292,13 +1224,54 @@ static void handle_serial_lost(modem_config *cfg) {
   }
   serial_reconnect(&cfg->dce_data);
   dashboard_set_serial_fd(cfg->dce_data.fd);
+  /* the port was reopened raw: put the operator's flow control (&K3) back */
+  dce_set_flow_control(&cfg->dce_data, cfg->dce_data.flow_control);
   mdm_set_control_lines(cfg);
+}
+
+/* A DTR drop that counts (outside the post-connect grace period). */
+static void dtr_dropped(modem_config *cfg) {
+  if(cfg->dtr_mode == 1) {
+    /* &D1: back to command mode, keep the carrier */
+    if(cfg->is_cmd_mode == FALSE) {
+      cfg->is_cmd_mode = TRUE;
+      mdm_send_response(MDM_RESP_OK, cfg);
+    }
+  } else {
+    mdm_disconnect(cfg, FALSE);
+    if(cfg->dtr_mode == 3) mdm_reset_profile(cfg);   /* &D3 */
+  }
+}
+
+/* The local side never answered the ringing caller. */
+static void no_answer(modem_config *cfg, int *consecutive_no_answer) {
+  if(strlen(cfg->no_answer) == 0) {
+    line_write(&cfg->line_data, (unsigned char *)MDM_NO_ANSWER, strlen(MDM_NO_ANSWER));
+  } else {
+    writeFile(cfg->no_answer, cfg->line_data.fd);
+  }
+  cfg->incoming_waiting_answer = FALSE;
+  cfg->incoming_answer_deadline = 0;
+  cfg->is_ringing = FALSE;
+  (*consecutive_no_answer)++;
+  LOG(LOG_INFO, "Answer timeout (%d consecutive no-answers)", *consecutive_no_answer);
+  if(*consecutive_no_answer >= 3 && cfg->watchdog_timeout > 0) {
+    LOG(LOG_WARN, "BBS appears hung — %d consecutive no-answers, toggling DTR",
+        *consecutive_no_answer);
+    dce_set_control_lines(&cfg->dce_data, 0);
+    usleep(500000);
+    mdm_set_control_lines(cfg);
+    *consecutive_no_answer = 0;
+  }
+  dashboard_line_state(cfg->idx, 0, NULL);
+  connlog_event(cfg->line_data.peer_ip, CONNLOG_NO_ANSWER);
+  line_disconnect(&cfg->line_data);
 }
 
 void *bridge_task(void *arg) {
   modem_config *cfg = (modem_config *)arg;
-  struct timeval timer;  
-  struct timeval *ptimer;  
+  struct timeval timer;
+  struct timeval *ptimer;
   int max_fd = 0;
   fd_set readfs;
   int res = 0;
@@ -1327,6 +1300,9 @@ void *bridge_task(void *arg) {
     ELOG(LOG_FATAL, "IP thread outgoing IPC pipe could not be created");
     exit(-1);
   }
+  set_cloexec(cfg->wp[0][0]); set_cloexec(cfg->wp[0][1]);
+  set_cloexec(cfg->cp[0][0]); set_cloexec(cfg->cp[0][1]);
+  set_cloexec(cfg->cp[1][0]); set_cloexec(cfg->cp[1][1]);
   if(dce_connect(&cfg->dce_data) < 0) {
     ELOG(LOG_FATAL, "Could not open serial port %s", cfg->dce_data.tty);
     exit(-1);
@@ -1361,6 +1337,7 @@ void *bridge_task(void *arg) {
         // probably should exit...
         exit(-1);
       } else {
+        snprintf(cfg->last_peer, sizeof(cfg->last_peer), "%s", cfg->dialno);
         cfg->conn_type = MDM_CONN_OUTGOING;
       }
     }
@@ -1371,31 +1348,35 @@ void *bridge_task(void *arg) {
       LOG(LOG_ALL, "Connection status change, handling");
       writePipe(cfg->cp[1][1], MSG_NOTIFY);
 
-      /* Watchdog: start timer when connection drops, clear when connected */
+      /* Watchdog: start timer when connection drops, clear when connected.
+       * The webhooks use last_peer: line_data.peer_ip is already cleared when
+       * the call has ended (DISCONNECTED used to carry an empty IP). */
       if(cfg->conn_type == MDM_CONN_NONE && last_conn_type != MDM_CONN_NONE) {
-        webhook_notify("DISCONNECTED", cfg->line_data.peer_ip);
+        webhook_notify("DISCONNECTED", cfg->last_peer);
         if(cfg->watchdog_timeout > 0) {
-          watchdog_start = time(NULL);
+          watchdog_start = mono_now();
           watchdog_dtr_attempts = 0;
           LOG(LOG_INFO, "BBS watchdog started (%ds timeout)", cfg->watchdog_timeout);
         }
       } else if(cfg->conn_type != MDM_CONN_NONE) {
-        webhook_notify("CONNECTED", cfg->line_data.peer_ip);
+        webhook_notify("CONNECTED", cfg->last_peer);
         watchdog_start = 0;
         watchdog_dtr_attempts = 0;
         consecutive_no_answer = 0;  /* BBS answered, reset counter */
       }
 
+      /* -c / -a go to the C64 (they used to be sent to the caller, the same
+       * as -C / -A); -C / -A go to the remote side. */
       if(cfg->conn_type == MDM_CONN_OUTGOING) {
         if(strlen(cfg->local_connect) > 0) {
-          writeFile(cfg->local_connect, cfg->line_data.fd);
+          mdm_write_file(cfg, cfg->local_connect);
         }
         if(strlen(cfg->remote_connect) > 0) {
           writeFile(cfg->remote_connect, cfg->line_data.fd);
         }
       } else if(cfg->conn_type == MDM_CONN_INCOMING) {
         if(strlen(cfg->local_answer) > 0) {
-          writeFile(cfg->local_answer, cfg->line_data.fd);
+          mdm_write_file(cfg, cfg->local_answer);
         }
         if(strlen(cfg->remote_answer) > 0) {
           writeFile(cfg->remote_answer, cfg->line_data.fd);
@@ -1432,39 +1413,49 @@ void *bridge_task(void *arg) {
     FD_SET(cfg->wp[0][0], &readfs);
     max_fd = MAX(max_fd, cfg->cp[0][0]);
     FD_SET(cfg->cp[0][0], &readfs);
-    ptimer = NULL;
-    if(cfg->is_cmd_mode == FALSE) {
+
+    /* Timers. The modem's own timer (escape guard time, inactivity, ring
+     * cadence) is `mdm_ms`; the housekeeping deadlines (watchdog, session
+     * limit, DTR re-check) only shorten the wait. A housekeeping wake must not
+     * be mistaken for the modem timer: that sent a stray OK to an idle C64,
+     * and an idle caller was never cut at the -m limit because nothing woke
+     * the loop. */
+    enum { TMR_NONE = 0, TMR_MODEM, TMR_RING };
+    int tmr_kind = TMR_NONE;
+    long long mdm_ms = -1, wait_ms = -1;
+    time_t now = mono_now();
+    if(cfg->is_cmd_mode == FALSE && cfg->conn_type != MDM_CONN_NONE) {
       if(cfg->pre_break_delay == FALSE || cfg->break_len == 3) {
         LOG(LOG_ALL, "Setting timer for break delay");
-        long long usec;
-        usec = cfg->s[S_REG_GUARD_TIME] * 20000;
-        timer.tv_sec = usec / 1000000;
-        timer.tv_usec = usec % 1000000;
-        ptimer = &timer;
+        mdm_ms = (long long)cfg->s[S_REG_GUARD_TIME] * 20;
       } else if(cfg->pre_break_delay == TRUE && cfg->break_len > 0) {
         LOG(LOG_ALL, "Setting timer for inter-break character delay");
-        timer.tv_sec = 1;   // 1 second
-        timer.tv_usec = 0;
-        ptimer = &timer;
-      } else if (cfg->s[30] != 0) {
+        mdm_ms = 1000;
+      } else if (cfg->s[S_REG_INACTIVITY_TIME] != 0) {
         LOG(LOG_ALL, "Setting timer for inactivity delay");
-        timer.tv_sec = cfg->s[S_REG_INACTIVITY_TIME] * 10;
-        timer.tv_usec = 0;
-        ptimer = &timer;
+        mdm_ms = (long long)cfg->s[S_REG_INACTIVITY_TIME] * 10000;
       }
+      if(mdm_ms >= 0) tmr_kind = TMR_MODEM;
     } else if(cfg->is_cmd_mode == TRUE
               && cfg->conn_type == MDM_CONN_NONE
               && cfg->line_data.is_connected == TRUE
+              && !cfg->gate_pending
              ) {
         LOG(LOG_ALL, "Setting timer for rings");
-        timer.tv_sec = 4;
-        timer.tv_usec = 0;
-        ptimer = &timer;
+        mdm_ms = 4000;
+        tmr_kind = TMR_RING;
     }
-    /* If watchdog is active and no shorter timer is set, use a 5s poll */
-    if(watchdog_start > 0 && ptimer == NULL) {
-      timer.tv_sec = 5;
-      timer.tv_usec = 0;
+    wait_ms = mdm_ms;
+#define SOONER(ms) do { long long m_ = (ms); if(m_ < 0) m_ = 0; if(wait_ms < 0 || m_ < wait_ms) wait_ms = m_; } while(0)
+    if(watchdog_start > 0) SOONER(5000);
+    if(cfg->max_session_minutes > 0 && cfg->conn_type != MDM_CONN_NONE && cfg->conn_established > 0)
+      SOONER(((long long)cfg->conn_established + (long long)cfg->max_session_minutes * 60 - now) * 1000 + 500);
+    if(cfg->dtr_recheck_at > 0) SOONER(((long long)cfg->dtr_recheck_at - now) * 1000 + 200);
+#undef SOONER
+    ptimer = NULL;
+    if(wait_ms >= 0) {
+      timer.tv_sec = wait_ms / 1000;
+      timer.tv_usec = (wait_ms % 1000) * 1000;
       ptimer = &timer;
     }
     max_fd++;
@@ -1475,75 +1466,33 @@ void *bridge_task(void *arg) {
         handle_serial_lost(cfg);
         continue;
       }
-      ELOG(LOG_WARN, "Select returned error");
+      if(errno != EINTR) ELOG(LOG_WARN, "Select returned error");
       /* readfs is undefined after an error return — do NOT fall through to the
        * FD_ISSET checks below (EINTR etc. land here too). Re-loop instead. */
       continue;
-    } else if(rc == 0) {
-      // timer popped.
-      if(cfg->is_cmd_mode == TRUE
-         && cfg->conn_type == MDM_CONN_NONE
-         && cfg->line_data.is_connected == TRUE
-        ) {
-        // If this incoming call was gated, enforce a short "must answer" window.
-        if(cfg->incoming_waiting_answer == TRUE && cfg->incoming_answer_deadline != 0) {
-          time_t now = time(NULL);
-          if(now >= cfg->incoming_answer_deadline) {
-            // not answered in time, send no-answer message/file to TCP side and disconnect.
-            if(strlen(cfg->no_answer) == 0) {
-              line_write(&cfg->line_data, (unsigned char *)MDM_NO_ANSWER, strlen(MDM_NO_ANSWER));
-            } else {
-              writeFile(cfg->no_answer, cfg->line_data.fd);
-            }
-            cfg->incoming_waiting_answer = FALSE;
-            cfg->incoming_answer_deadline = 0;
-            cfg->is_ringing = FALSE;
-            consecutive_no_answer++;
-            LOG(LOG_INFO, "Answer timeout (%d consecutive no-answers)", consecutive_no_answer);
-            if(consecutive_no_answer >= 3 && cfg->watchdog_timeout > 0) {
-              LOG(LOG_WARN, "BBS appears hung — %d consecutive no-answers, toggling DTR",
-                  consecutive_no_answer);
-              dce_set_control_lines(&cfg->dce_data, 0);
-              usleep(500000);
-              mdm_set_control_lines(cfg);
-              consecutive_no_answer = 0;
-            }
-            dashboard_line_state(cfg->idx, 0, NULL);
-            connlog_event(cfg->line_data.peer_ip, CONNLOG_NO_ANSWER);
-            line_disconnect(&cfg->line_data);
+    } else if(rc == 0 && tmr_kind != TMR_NONE && wait_ms == mdm_ms) {
+      // the modem timer popped.
+      if(tmr_kind == TMR_RING) {
+        if(cfg->is_cmd_mode == TRUE
+           && cfg->conn_type == MDM_CONN_NONE
+           && cfg->line_data.is_connected == TRUE
+           && !cfg->gate_pending) {
+          // Enforce the "must answer" window, then ring again.
+          if(cfg->incoming_waiting_answer == TRUE && cfg->incoming_answer_deadline != 0
+             && mono_now() >= cfg->incoming_answer_deadline) {
+            no_answer(cfg, &consecutive_no_answer);
             continue;
           }
-        }
-
-        if(cfg->s[0] == 0 && cfg->rings == 10) {
-          // not going to answer, send some data back to IP and disconnect.
-          if(strlen(cfg->no_answer) == 0) {
-            line_write(&cfg->line_data, (unsigned char *)MDM_NO_ANSWER, strlen(MDM_NO_ANSWER));
-          } else {
-            writeFile(cfg->no_answer, cfg->line_data.fd);
-          }
-          cfg->is_ringing = FALSE;
-          consecutive_no_answer++;
-          LOG(LOG_INFO, "No answer (%d consecutive)", consecutive_no_answer);
-          if(consecutive_no_answer >= 3 && cfg->watchdog_timeout > 0) {
-            LOG(LOG_WARN, "BBS appears hung — %d consecutive no-answers, toggling DTR",
-                consecutive_no_answer);
-            dce_set_control_lines(&cfg->dce_data, 0);  /* DTR low (DCD low to C64) */
-            usleep(500000);
-            mdm_set_control_lines(cfg);                 /* restore normal state */
-            consecutive_no_answer = 0;
-          }
-          dashboard_line_state(cfg->idx, 0, NULL);
-          connlog_event(cfg->line_data.peer_ip, CONNLOG_NO_ANSWER);
-        } else
           mdm_send_ring(cfg);
-      } else
+        }
+      } else if(cfg->is_cmd_mode == FALSE) {
         mdm_handle_timeout(cfg);
+      }
     }
     /* BBS watchdog: no serial data since disconnect */
     if(watchdog_start > 0 && cfg->conn_type == MDM_CONN_NONE
        && !cfg->line_data.is_connected) {
-      time_t elapsed = time(NULL) - watchdog_start;
+      time_t elapsed = mono_now() - watchdog_start;
       if(elapsed >= cfg->watchdog_timeout) {
         watchdog_dtr_attempts++;
         LOG(LOG_WARN, "BBS watchdog fired: no serial data for %lds, toggling DTR (attempt %d)",
@@ -1566,19 +1515,35 @@ void *bridge_task(void *arg) {
           watchdog_start = 0;
           continue;
         }
-        watchdog_start = time(NULL);  /* reset for next attempt */
+        watchdog_start = mono_now();  /* reset for next attempt */
       }
     }
     /* Max session time enforcement */
     if(cfg->max_session_minutes > 0 && cfg->conn_type != MDM_CONN_NONE
        && cfg->conn_established > 0) {
-      long session_secs = (long)(time(NULL) - cfg->conn_established);
+      long session_secs = (long)(mono_now() - cfg->conn_established);
       if(session_secs >= cfg->max_session_minutes * 60) {
         LOG(LOG_INFO, "Max session time reached (%d min), disconnecting",
             cfg->max_session_minutes);
+        dashboard_note("line %d: session limit (%d min) reached, caller disconnected", cfg->idx, cfg->max_session_minutes);
         mdm_disconnect(cfg, FALSE);
       }
     }
+    /* A DTR drop inside the post-connect grace period was ignored (the BBS
+     * may still be finishing its reset from the previous call). If DTR is
+     * still low when the grace ends, it was a real hangup request. */
+    if(cfg->dtr_recheck_at > 0 && mono_now() >= cfg->dtr_recheck_at) {
+      cfg->dtr_recheck_at = 0;
+      if(cfg->conn_type != MDM_CONN_NONE && cfg->dtr_mode != 0) {
+        int st = dce_get_control_lines(&cfg->dce_data);
+        if(st >= 0 && !(st & DCE_CL_DTR)) {
+          LOG(LOG_INFO, "DTR still low after the grace period: acting on it");
+          dtr_dropped(cfg);
+        }
+      }
+    }
+    if(rc <= 0) continue;   /* nothing readable: readfs is all-clear on timeout */
+
     /* fd is -1 in ip232 mode until the emulator attaches; FD_ISSET(-1) is UB
      * and aborts under glibc's _FORTIFY_SOURCE=2. Mirror the FD_SET guard. */
     if (cfg->dce_data.is_connected && cfg->dce_data.fd >= 0
@@ -1600,9 +1565,19 @@ void *bridge_task(void *arg) {
         if(cfg->conn_type == MDM_CONN_NONE
            && !cfg->is_cmd_mode
            && cfg->is_off_hook) {
-          // this handles the case where atdt/ata goes off hook, but no
-          // connection
-          mdm_disconnect(cfg, FALSE);
+          /* Off hook with no connection: an outgoing call still being set
+           * up, or ATD/ATH1 with nothing dialled. Any key aborts, as on a
+           * real modem (the CR/LF that ends the ATD line does not count). */
+          int abort_call = FALSE;
+          for(int i = 0; i < res; i++) {
+            unsigned char c = buf[i] & 0x7f;
+            if(c != '\r' && c != '\n') abort_call = TRUE;
+          }
+          if(abort_call || !cfg->dial_pending) {
+            LOG(LOG_INFO, "Call attempt aborted from the keyboard");
+            mdm_disconnect(cfg, FALSE);      /* cancels the dial, back on hook */
+            mdm_send_response(MDM_RESP_NO_CARRIER, cfg);
+          }
         } else {
           mdm_parse_data(cfg, buf, res);
         }
@@ -1611,6 +1586,9 @@ void *bridge_task(void *arg) {
     if (cfg->dce_data.is_ip232 && FD_ISSET(cfg->dce_data.dp[0][0], &readfs)) {
       readPipe(cfg->dce_data.dp[0][0], buf, sizeof(buf));   /* just a wake-up */
       LOG(LOG_INFO, "ip232 emulator attached");
+      /* a fresh emulator assumes no carrier: tell it the real DCD state
+       * (matters with &C0, or when it re-attaches during a call) */
+      mdm_set_control_lines(cfg);
     }
     if (FD_ISSET(cfg->wp[0][0], &readfs)) {  // control pipe
       res = readPipe(cfg->wp[0][0], buf, sizeof(buf));
@@ -1622,25 +1600,34 @@ void *bridge_task(void *arg) {
           switch (buf[i]) {
             case MSG_DTR_DOWN:
               // DTR drop behavior depends on &D setting
-              // 0 = ignore, 1 = command mode (keep carrier), 2 = hang up
+              // 0 = ignore, 1 = command mode (keep carrier), 2 = hang up,
+              // 3 = hang up and reset
               // IMPORTANT: Only act on DTR drop if there's an active connection.
               // During modem init, the BBS toggles DTR as part of its reset
               // sequence — this is NOT a hang-up request.
-              // Grace period: ignore DTR drops within 3 seconds of connection
-              // to avoid race with BBS reset sequence from previous session.
+              // Grace period: a drop within 5 seconds of the connection is
+              // not acted on at once (race with the BBS reset sequence from
+              // the previous session) but re-checked when the grace ends.
               if (cfg->dtr_mode == 0 || cfg->conn_type == MDM_CONN_NONE) {
                 // ignore (no connection or &D0)
               } else if (cfg->conn_established > 0 &&
-                         (time(NULL) - cfg->conn_established) < 5) {
-                LOG(LOG_INFO, "DTR drop ignored (within 3s grace period after connect)");
-              } else if (cfg->dtr_mode == 1) {
-                cfg->is_cmd_mode = TRUE;
+                         (mono_now() - cfg->conn_established) < 5) {
+                LOG(LOG_INFO, "DTR drop inside the 5 s grace period after connect; will re-check");
+                cfg->dtr_recheck_at = cfg->conn_established + 5;
               } else {
-                mdm_disconnect(cfg, FALSE);
+                dtr_dropped(cfg);
               }
               break;
             case MSG_DTR_UP:
-              // no-op by default
+              cfg->dtr_recheck_at = 0;
+              break;
+            case MSG_LE_DOWN:
+              /* ip232: the emulator went away. With &D0 nothing else would
+               * ever end the call, and the caller would talk to nobody. */
+              if(cfg->dce_data.is_ip232 && cfg->conn_type != MDM_CONN_NONE) {
+                LOG(LOG_INFO, "ip232 emulator disconnected during a call: hanging up the caller");
+                mdm_disconnect(cfg, TRUE);
+              }
               break;
             case MSG_SER_LOST:
               /* ctrl_thread's TIOCMGET failed. Confirm before tearing down:
@@ -1656,50 +1643,67 @@ void *bridge_task(void *arg) {
         }
       }
     }
-    if (FD_ISSET(cfg->cp[0][0], &readfs)) {  // ip thread pipe
+    if (FD_ISSET(cfg->cp[0][0], &readfs)) {  // ip / gate / dial thread pipe
       res = readPipe(cfg->cp[0][0], buf, sizeof(buf));
-      LOG(LOG_DEBUG, "Received %c from ip thread", buf[0]);
-      switch (buf[0]) {
-        case MSG_DISCONNECT:
-          if(cfg->direct_conn == TRUE) {
-            // what should we do here...
-            LOG(LOG_ERROR, "Direct Connection Link broken, disconnecting and awaiting new direct connection");
-            mdm_disconnect(cfg, TRUE);
-          } else {
-            mdm_disconnect(cfg, FALSE);
-          }
-          break;
+      /* several one-byte messages can arrive in one read: handle each */
+      for(int i = 0; i < res; i++) {
+        LOG(LOG_DEBUG, "Received %c from a helper thread", buf[i]);
+        switch (buf[i]) {
+          case MSG_GATE_DONE:
+            gate_finish(cfg);
+            break;
+          case MSG_DIAL_DONE:
+            mdm_dial_done(cfg);
+            break;
+          case MSG_DISCONNECT:
+            if(cfg->disc_gen != cfg->line_data.gen || cfg->line_data.is_connected != TRUE
+               || cfg->gate_pending) {
+              /* about a call that has already ended (we hung up while the
+               * reader was reporting): must not touch the line's next call */
+              LOG(LOG_DEBUG, "Stale peer-closed notification ignored");
+              writePipe(cfg->cp[1][1], MSG_NOTIFY);
+            } else if(cfg->direct_conn == TRUE) {
+              // what should we do here...
+              LOG(LOG_ERROR, "Direct Connection Link broken, disconnecting and awaiting new direct connection");
+              mdm_disconnect(cfg, TRUE);
+              writePipe(cfg->cp[1][1], MSG_NOTIFY);
+            } else {
+              mdm_disconnect(cfg, FALSE);
+              writePipe(cfg->cp[1][1], MSG_NOTIFY);
+            }
+            break;
+        }
       }
     }
     if (FD_ISSET(cfg->mp[1][0], &readfs)) {  // parent pipe
       LOG(LOG_DEBUG, "Data available on incoming IPC pipe");
       res = readPipe(cfg->mp[1][0], buf, sizeof(buf));
-      if(res <= 0) continue; /* pipe error, retry */
-      switch (buf[0]) {
-        case MSG_CALLING:       // accept connection.
-          accept_connection(cfg);
-          break;
-        case MSG_HANGUP:        // dashboard: force hangup
-          LOG(LOG_INFO, "Dashboard hangup requested");
-          mdm_disconnect(cfg, TRUE);
-          break;
-        case MSG_RESET:         // dashboard: soft reset (AT&F equivalent)
-          LOG(LOG_INFO, "Dashboard reset requested");
-          mdm_disconnect(cfg, TRUE);
-          /* Reset modem emulation state only — preserve pipes, serial fd, etc. */
-          cfg->is_cmd_mode = TRUE;
-          cfg->is_off_hook = FALSE;
-          cfg->is_ringing = FALSE;
-          cfg->break_len = 0;
-          cfg->pre_break_delay = FALSE;
-          cfg->cur_line_idx = 0;
-          cfg->rings = 0;
-          mdm_reset_profile(cfg);   /* same path as ATZ / AT&F */
-          break;
+      for(int i = 0; i < res; i++) {
+        switch (buf[i]) {
+          case MSG_CALLING:       // accept connection.
+            accept_connection(cfg);
+            break;
+          case MSG_HANGUP:        // dashboard: force hangup
+            LOG(LOG_INFO, "Dashboard hangup requested");
+            mdm_disconnect(cfg, TRUE);
+            break;
+          case MSG_RESET:         // dashboard: soft reset (AT&F equivalent)
+            LOG(LOG_INFO, "Dashboard reset requested");
+            mdm_disconnect(cfg, TRUE);
+            /* Reset modem emulation state only — preserve pipes, serial fd, etc. */
+            cfg->is_cmd_mode = TRUE;
+            cfg->is_off_hook = FALSE;
+            cfg->is_ringing = FALSE;
+            cfg->break_len = 0;
+            cfg->pre_break_delay = FALSE;
+            cfg->cur_line_idx = 0;
+            cfg->rings = 0;
+            mdm_reset_profile(cfg);   /* same path as ATZ / AT&F */
+            break;
+        }
       }
     }
   }
   LOG_EXIT();
   return NULL;
 }
-

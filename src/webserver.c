@@ -25,6 +25,7 @@
 #include <unistd.h>
 #include <errno.h>
 #include <pthread.h>
+#include <signal.h>
 #include <stdatomic.h>
 #include <sys/socket.h>
 #include <sys/time.h>
@@ -56,6 +57,7 @@ static pthread_t g_web_thread;
 static _Atomic int g_web_running = 0;   /* set by main, read by the accept thread */
 static char g_web_bind[64] = "127.0.0.1";
 static char g_web_token[128] = {0};
+static char g_web_hosts[256] = {0};     /* extra Host names accepted without a token (TCPSER_DASH_HOST) */
 static char g_web_name[64] = "TCPSER";
 /* Live-traffic CONTENT is opt-in (TCPSER_DASH_TRAFFIC=1): the raw bytes can
  * include what callers type into the BBS (even passwords). Without it the feed
@@ -327,6 +329,32 @@ static int header_get(const char *req, const char *name, char *out, size_t outsz
   }
   return 0;
 }
+/* DNS-rebinding guard. With no token configured, anything that can make the
+ * operator's browser send a request to this port can read the console: a
+ * hostile web page only has to point its own host name at 127.0.0.1 and it is
+ * "same origin". Such a request carries the attacker's NAME in Host, so
+ * without a token we answer only to an IP literal, "localhost", the bind
+ * address, or a name the operator listed (--web-host). With a token the
+ * cookie is bound to the real origin and the check is not needed (and a
+ * reverse proxy may pass any public name). */
+static int host_allowed(const char *req) {
+  char host[128];
+  if(g_web_token[0]) return 1;
+  if(!header_get(req, "Host", host, sizeof(host)) || !host[0]) return 1;   /* HTTP/1.0 tools; browsers always send it */
+  if(host[0] == '[') return 1;                                              /* IPv6 literal */
+  char *colon = strrchr(host, ':');
+  if(colon) *colon = 0;
+  if(strcasecmp(host, "localhost") == 0 || strcasecmp(host, g_web_bind) == 0) return 1;
+  if(host[0] && strspn(host, "0123456789.") == strlen(host)) return 1;      /* IPv4 literal */
+  size_t hl = strlen(host);
+  for(const char *p = g_web_hosts; *p; ) {
+    size_t n = strcspn(p, ", ");
+    if(n == hl && strncasecmp(p, host, n) == 0) return 1;
+    p += n;
+    while(*p == ',' || *p == ' ') p++;
+  }
+  return 0;
+}
 static int cookie_get(const char *cookies, const char *name, char *out, size_t outsz) {
   size_t nl = strlen(name);
   const char *p = cookies;
@@ -391,6 +419,13 @@ static void handle_request(int fd) {
 
   if(parse_http_request_safe(buffer, (size_t)n, &request) != 0) { send_text(fd, 400, "Bad Request"); close(fd); return; }
   if(!request.headers_complete) { send_text(fd, 400, "Incomplete Request"); close(fd); return; }
+
+  if(!host_allowed(buffer)) {
+    LOG(LOG_WARN, "Web request with an unexpected Host header refused (DNS rebinding guard). Set a token, or list the name with --web-host.");
+    send_text(fd, 403, "Forbidden: unexpected Host header. Set a web token, or allow this name with --web-host.");
+    close(fd);
+    return;
+  }
 
   char *query = strchr(request.path, '?');
   if(query) { *query = 0; query++; }
@@ -481,10 +516,16 @@ static void handle_request(int fd) {
   close(fd);
 }
 
+/* One slot per running handler, so one remote address cannot take the whole
+ * pool. Loopback is exempt: behind a reverse proxy every client is 127.0.0.1. */
+#define MAX_WEB_PER_IP 6
+static struct { int used; int fd; in_addr_t addr; } g_web_slots[MAX_WEB_HANDLERS];
+
 static void *handler_entry(void *arg) {
-  int fd = (int)(intptr_t)arg;
-  handle_request(fd);
+  int slot = (int)(intptr_t)arg;
+  handle_request(g_web_slots[slot].fd);
   pthread_mutex_lock(&g_web_handlers_mutex);
+  g_web_slots[slot].used = 0;
   if(g_web_handlers > 0) g_web_handlers--;
   pthread_mutex_unlock(&g_web_handlers_mutex);
   return NULL;
@@ -509,16 +550,24 @@ static void *webserver_thread(void *arg) {
     setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO, &to, sizeof(to));
     setsockopt(client_fd, SOL_SOCKET, SO_SNDTIMEO, &to, sizeof(to));
 
+    set_cloexec(client_fd);
+    in_addr_t peer = client_addr.sin_addr.s_addr;
+    int loop_peer = ((ntohl(peer) >> 24) == 127);
+    int slot = -1, same = 0;
     pthread_mutex_lock(&g_web_handlers_mutex);
-    int busy = (g_web_handlers >= MAX_WEB_HANDLERS);
-    if(!busy) g_web_handlers++;
+    for(int i = 0; i < MAX_WEB_HANDLERS; i++) {
+      if(!g_web_slots[i].used) { if(slot < 0) slot = i; }
+      else if(g_web_slots[i].addr == peer) same++;
+    }
+    int busy = (g_web_handlers >= MAX_WEB_HANDLERS) || slot < 0 || (!loop_peer && same >= MAX_WEB_PER_IP);
+    if(!busy) { g_web_handlers++; g_web_slots[slot].used = 1; g_web_slots[slot].fd = client_fd; g_web_slots[slot].addr = peer; }
     pthread_mutex_unlock(&g_web_handlers_mutex);
     if(busy) { send_text(client_fd, 503, "Server Busy"); close(client_fd); continue; }
 
     pthread_t th; pthread_attr_t attr;
     pthread_attr_init(&attr); pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
-    if(pthread_create(&th, &attr, handler_entry, (void *)(intptr_t)client_fd) != 0) {
-      pthread_mutex_lock(&g_web_handlers_mutex); g_web_handlers--; pthread_mutex_unlock(&g_web_handlers_mutex);
+    if(pthread_create(&th, &attr, handler_entry, (void *)(intptr_t)slot) != 0) {
+      pthread_mutex_lock(&g_web_handlers_mutex); g_web_handlers--; g_web_slots[slot].used = 0; pthread_mutex_unlock(&g_web_handlers_mutex);
       close(client_fd);
     }
     pthread_attr_destroy(&attr);
@@ -540,6 +589,8 @@ void webserver_read_env(void) {
   const char *token_env = getenv("TCPSER_DASH_TOKEN");
   const char *traffic_env = getenv("TCPSER_DASH_TRAFFIC");
   const char *name_env = getenv("TCPSER_DASH_NAME");
+  const char *host_env = getenv("TCPSER_DASH_HOST");
+  if(host_env && host_env[0]) safe_strncpy(g_web_hosts, host_env, sizeof(g_web_hosts));
   if(bind_env && bind_env[0]) safe_strncpy(g_web_bind, bind_env, sizeof(g_web_bind));
   if(token_env && token_env[0]) {
     /* the token travels in a URL and a cookie: keep it to URL-safe characters */
@@ -589,8 +640,18 @@ int webserver_start(void) {
   if(g_web_traffic && (!loopback || g_web_token[0] == 0))
     LOG(LOG_WARN, "TCPSER_DASH_TRAFFIC is ON - the web dashboard streams caller session CONTENT. Only expose this behind localhost + a token.");
 
+  set_cloexec(g_web_socket);
   g_web_running = 1;
-  if(pthread_create(&g_web_thread, NULL, webserver_thread, NULL) != 0) {
+  /* like every other worker (see spawn_thread): the operator signals go to
+   * the main thread only; handler threads inherit this mask */
+  sigset_t blk, old;
+  sigemptyset(&blk);
+  sigaddset(&blk, SIGTERM); sigaddset(&blk, SIGINT); sigaddset(&blk, SIGHUP);
+  sigaddset(&blk, SIGUSR1); sigaddset(&blk, SIGUSR2);
+  pthread_sigmask(SIG_BLOCK, &blk, &old);
+  int trc = pthread_create(&g_web_thread, NULL, webserver_thread, NULL);
+  pthread_sigmask(SIG_SETMASK, &old, NULL);
+  if(trc != 0) {
     LOG(LOG_ERROR, "Failed to start web server thread");
     close(g_web_socket); g_web_socket = -1; g_web_running = 0; return -1;
   }

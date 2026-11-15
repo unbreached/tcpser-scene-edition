@@ -153,7 +153,7 @@ static char **build_hook_env(const char *peer_ip) {
     }
     static char path_var[] = "PATH=/usr/local/bin:/usr/bin:/bin";
     static char dir_var[] = "TCPSER_SCRIPT_DIR=" TCPSER_SCRIPT_DIR;
-    static char ip_var[64];
+    static __thread char ip_var[64];   /* one per calling thread: lines run hooks concurrently */
     env[k++] = path_var;
     env[k++] = dir_var;
     if (peer_ip) {

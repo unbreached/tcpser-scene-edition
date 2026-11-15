@@ -85,6 +85,8 @@ const opt_desc OPTS[] = {
 
   { 'w', "watchdog", OPT_ARG, "SECONDS", G_LIMITS, "BBS watchdog [120, 0=off, max 600]",
     "BBS watchdog: toggle DTR if the BBS does not re-arm after a disconnect (default 120 s, 0 = off, max 600).", NULL, 1 },
+  { LO_ANSWER_TIMEOUT, "answer-timeout", OPT_ARG, "SECONDS", G_LIMITS, "how long the BBS may take to answer RING [10]",
+    "How long the BBS may take to answer a ringing call before the caller gets the no-answer screen (default 10 s, max 120). With `S0=n` auto-answer the wait is extended to cover `n` rings.", NULL, 1 },
   { 'm', "max-session", OPT_ARG, "MINUTES", G_LIMITS, "max session time [0=unlimited]",
     "Maximum session time in minutes (default 0 = unlimited).", NULL, 1 },
 
@@ -96,6 +98,8 @@ const opt_desc OPTS[] = {
     "Bind address of the web console (default `127.0.0.1`; expose only behind nginx + TLS).", "TCPSER_DASH_BIND", 0 },
   { LO_WEB_TOKEN, "web-token", OPT_ARG, "TOKEN", G_MON, "require ?token= on the web console",
     "Require `?token=TOKEN` once to sign in to the web console (letters, digits, `-`, `_`, `.`). Prefer the environment variable: a token on the command line is visible in `ps`.", "TCPSER_DASH_TOKEN", 0 },
+  { LO_WEB_HOST, "web-host", OPT_ARG, "NAME[,NAME]", G_MON, "host names the web console answers to without a token",
+    "Host names the web console answers to when no token is set (comma separated). Without a token it otherwise accepts only an IP address or `localhost` in the `Host` header, which stops DNS-rebinding attacks from web pages.", "TCPSER_DASH_HOST", 0 },
   { LO_WEB_TRAFFIC, "web-traffic", OPT_FLAG, NULL, G_MON, "include payload bytes in the web traffic feed",
     "Include payload content in the web traffic feed (callers' keystrokes; keep it behind a token).", "TCPSER_DASH_TRAFFIC", 0 },
   { LO_NAME, "name", OPT_ARG, "NAME", G_MON, "BBS name shown in the web console", "BBS name shown in the web console header.", "TCPSER_DASH_NAME", 0 },

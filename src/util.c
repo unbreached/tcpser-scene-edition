@@ -7,6 +7,7 @@
 #include <errno.h>
 #include <poll.h>
 #include <signal.h>
+#include <fcntl.h>
 
 #include "debug.h"
 #include "util.h"
@@ -121,4 +122,22 @@ void fmt_timestamp(char *buf, size_t size, const char *fmt) {
   } else {
     snprintf(buf, size, "?");
   }
+}
+
+long long mono_ms(void) {
+  struct timespec ts;
+  if(clock_gettime(CLOCK_MONOTONIC, &ts) != 0) return (long long)time(NULL) * 1000;
+  /* +1000 s so the value is never 0 right after boot */
+  return ((long long)ts.tv_sec + 1000) * 1000 + ts.tv_nsec / 1000000;
+}
+
+time_t mono_now(void) { return (time_t)(mono_ms() / 1000); }
+
+/* Children (curl for webhooks, the -E hook) must not inherit our sockets, the
+ * serial port or the pipes: an inherited listening socket kept the port busy
+ * across a quick restart. */
+void set_cloexec(int fd) {
+  if(fd < 0) return;
+  int fl = fcntl(fd, F_GETFD);
+  if(fl >= 0) (void)fcntl(fd, F_SETFD, fl | FD_CLOEXEC);
 }

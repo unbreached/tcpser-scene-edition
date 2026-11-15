@@ -1,5 +1,5 @@
 .\"                                      Hey, EMACS: -*- nroff -*-
-.TH TCPSER 1 "November 2026" "tcpser 1.4.1"
+.TH TCPSER 1 "November 2026" "tcpser 1.4.2"
 .SH NAME
 tcpser \- Hayes compatible modem emulator over TCP/IP
 .SH SYNOPSIS
@@ -142,6 +142,9 @@ Persist counters across restarts (saved every 60 s and on exit).
 \fB\-w\fP, \fB\-\-watchdog\fP \fISECONDS\fP
 BBS watchdog: toggle DTR if the BBS does not re\-arm after a disconnect (default 120 s, 0 = off, max 600).
 .TP
+\fB\-\-answer\-timeout\fP \fISECONDS\fP
+How long the BBS may take to answer a ringing call before the caller gets the no\-answer screen (default 10 s, max 120). With \fBS0=n\fP auto\-answer the wait is extended to cover \fBn\fP rings.
+.TP
 \fB\-m\fP, \fB\-\-max\-session\fP \fIMINUTES\fP
 Maximum session time in minutes (default 0 = unlimited).
 .SS "Monitoring / notify"
@@ -157,6 +160,9 @@ Bind address of the web console (default \fB127.0.0.1\fP; expose only behind ngi
 .TP
 \fB\-\-web\-token\fP \fITOKEN\fP
 Require \fB?token=TOKEN\fP once to sign in to the web console (letters, digits, \fB\-\fP, \fB_\fP, \fB.\fP). Prefer the environment variable: a token on the command line is visible in \fBps\fP. Also the environment variable \fBTCPSER_DASH_TOKEN\fP.
+.TP
+\fB\-\-web\-host\fP \fINAME[,NAME]\fP
+Host names the web console answers to when no token is set (comma separated). Without a token it otherwise accepts only an IP address or \fBlocalhost\fP in the \fBHost\fP header, which stops DNS\-rebinding attacks from web pages. Also the environment variable \fBTCPSER_DASH_HOST\fP.
 .TP
 \fB\-\-web\-traffic\fP
 Include payload content in the web traffic feed (callers' keystrokes; keep it behind a token). Also the environment variable \fBTCPSER_DASH_TRAFFIC\fP.
@@ -281,6 +287,11 @@ Path to the IP allowlist file.
 .B TCPSER_DASH_BIND
 Bind address for the \fB\-H\fP web dashboard (default 127.0.0.1).  Set to
 0.0.0.0 to expose it on all interfaces.
+.TP
+.B TCPSER_DASH_HOST
+Host names the web dashboard answers to when no token is set (comma
+separated).  Without a token it otherwise accepts only an IP address or
+"localhost" in the Host header, which stops DNS rebinding from web pages.
 .TP
 .B TCPSER_DASH_TOKEN
 If set, the \fB\-H\fP web dashboard requires \fB?token=<value>\fP on every

@@ -116,7 +116,6 @@ typedef struct modem_config {
   int invert_dsr;
   int invert_dcd;
   int allow_transmit;
-  int is_binary_negotiated;
   int rings;
   // command information
   int pre_break_delay;
@@ -180,6 +179,24 @@ typedef struct modem_config {
   int  baud_menu_speed[BAUD_MENU_MAX];   // e.g. 9600
   int  baud_menu_poke[BAUD_MENU_MAX];    // POKE 838 value that selects that speed
 
+  // Pre-connect phase (banner, gate, baud menu) runs in its own thread so the
+  // line keeps serving the C64 meanwhile. While gate_pending is set that
+  // thread owns the caller socket: nobody else closes it (see line_abort).
+  _Atomic int gate_pending;
+  _Atomic int gate_abort;       // we cancelled it (hangup/shutdown): no strike for the caller
+  _Atomic int gate_trusted;     // allowlisted caller: skip banner and gate
+  _Atomic int gate_result;      // TRUE = passed
+  _Atomic int gate_baud;        // baud menu choice (index), -1 = none
+  // Outgoing call in progress (dial thread). dial_gen invalidates a cancelled
+  // attempt; dial_lock guards the hand-over of the connected socket.
+  _Atomic int dial_pending;
+  _Atomic unsigned dial_gen;
+  pthread_mutex_t dial_lock;
+  int dial_fd;
+  int dial_why;                 // IP_ERR_* when dial_fd < 0
+  _Atomic unsigned disc_gen;    // line generation the reader thread saw close
+  time_t dtr_recheck_at;        // DTR dropped inside the post-connect grace: look again then
+  char last_peer[64];           // peer of the current/last call (survives the disconnect)
   mdm_profile profile;                   // restored by ATZ / AT&F (see mdm_save_profile)
   int  idx;                              // modem line number (0-based), for dashboards
 } modem_config;
@@ -201,6 +218,11 @@ int mdm_print_speed(modem_config *cfg);
 int mdm_connect(modem_config *cfg);
 int mdm_listen(modem_config *cfg);
 int mdm_disconnect(modem_config *cfg, unsigned char force);
+/* quiet: the hangup was asked for by an AT command, whose own OK is the only result */
+int mdm_hangup(modem_config *cfg, unsigned char force, int quiet);
+void mdm_dial_abort(modem_config *cfg);
+void mdm_dial_done(modem_config *cfg);
+int mdm_write_file(modem_config *cfg, const char *path);
 int mdm_parse_cmd(modem_config *cfg);
 int mdm_handle_char(modem_config *cfg, unsigned char ch);
 int mdm_clear_break(modem_config *cfg);

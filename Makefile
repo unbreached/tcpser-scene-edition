@@ -9,7 +9,10 @@ OBJS = $(SRC)/bridge.o $(SRC)/debug.o $(SRC)/getcmd.o $(SRC)/ip.o $(SRC)/init.o 
 WEB_FILES = $(SRC)/web/index.html $(SRC)/web/app.js $(SRC)/web/style.css
 $(SRC)/web_assets.c: $(WEB_FILES) tools/embed.sh
 	sh tools/embed.sh $@ $(WEB_FILES)
-CC = gcc
+# cc is gcc on Linux and clang on macOS/BSD; override with make CC=...
+CC ?= cc
+# compiler for the sanitizer builds (check-asan / check-tsan); gcc works too
+SAN_CC ?= clang
 DEF =
 UNAME_S := $(shell uname -s)
 
@@ -54,10 +57,15 @@ install: tcpser
 	install -m 644 man/tcpser.1 $(DESTDIR)$(MANDIR)/tcpser.1
 	install -d $(DESTDIR)$(DATADIR)
 	install -m 644 data/*.seq $(DESTDIR)$(DATADIR)/
-	install -m 644 data/tcpser.blocklist $(DESTDIR)$(DATADIR)/tcpser.blocklist
+	@# never overwrite files the operator may have edited (a re-install used to
+	@# replace a live blocklist and an edited config with the shipped ones)
+	@if [ -e $(DESTDIR)$(DATADIR)/tcpser.blocklist ]; then echo "keeping existing $(DESTDIR)$(DATADIR)/tcpser.blocklist"; \
+	  else install -m 644 data/tcpser.blocklist $(DESTDIR)$(DATADIR)/tcpser.blocklist; fi
 	install -m 644 data/com.tcpser.bbs.plist $(DESTDIR)$(DATADIR)/
 	install -m 644 data/tcpser.service $(DESTDIR)$(DATADIR)/
-	install -m 644 data/tcpser.conf $(DESTDIR)$(DATADIR)/
+	@if [ -e $(DESTDIR)$(DATADIR)/tcpser.conf ]; then echo "keeping existing $(DESTDIR)$(DATADIR)/tcpser.conf (new template: tcpser.conf.new)"; \
+	  install -m 644 data/tcpser.conf $(DESTDIR)$(DATADIR)/tcpser.conf.new; \
+	  else install -m 644 data/tcpser.conf $(DESTDIR)$(DATADIR)/; fi
 	@echo ""
 	@echo "Installed tcpser to $(DESTDIR)$(BINDIR)/tcpser"
 	@echo "Data files installed to $(DESTDIR)$(DATADIR)/"
@@ -106,7 +114,7 @@ check-docs: tcpser
 
 build/tcpser-asan: $(SRCS) $(wildcard $(SRC)/*.h)
 	mkdir -p build
-	clang $(SAN_CFLAGS) $(DEF) $(SRCS) -o $@ -lpthread
+	$(SAN_CC) $(SAN_CFLAGS) $(DEF) $(SRCS) -o $@ -lpthread
 
 check-asan: build/tcpser-asan
 	ASAN_OPTIONS=halt_on_error=0:detect_leaks=0 python3 tests/run_tests.py build/tcpser-asan
@@ -115,7 +123,7 @@ check-asan: build/tcpser-asan
 TSAN_CFLAGS = -O1 -g -fsanitize=thread -fno-omit-frame-pointer -Wall -Wextra -Wno-unused-parameter
 build/tcpser-tsan: $(SRCS) $(wildcard $(SRC)/*.h)
 	mkdir -p build
-	clang $(TSAN_CFLAGS) $(DEF) $(SRCS) -o $@ -lpthread
+	$(SAN_CC) $(TSAN_CFLAGS) $(DEF) $(SRCS) -o $@ -lpthread
 
 check-tsan: build/tcpser-tsan
 	TSAN_OPTIONS=report_signal_unsafe=0:halt_on_error=0:second_deadlock_stack=1 python3 tests/run_tests.py build/tcpser-tsan

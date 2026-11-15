@@ -17,6 +17,7 @@
 #include "modem_core.h"
 #include "phone_book.h"
 #include "util.h"
+#include "serial.h"
 #include "analyzer.h"
 #include "dashboard.h"
 #include "webserver.h"
@@ -187,6 +188,8 @@ int main(int argc, char *argv[]) {
       ELOG(LOG_FATAL, "Bridge task outgoing IPC pipe could not be created");
       exit(-1);
     }
+    set_cloexec(cfg[i].mp[0][0]); set_cloexec(cfg[i].mp[0][1]);
+    set_cloexec(cfg[i].mp[1][0]); set_cloexec(cfg[i].mp[1][1]);
     cfg[i].line_data.sfd = -1;  /* Will be set when connection accepted */
 
     spawn_thread(*bridge_task, (void *)&cfg[i], "BRIDGE");
@@ -217,7 +220,7 @@ int main(int argc, char *argv[]) {
       if(g_sighup) { g_sighup = 0; log_reopen(); LOG(LOG_INFO, "Log file reopened (SIGHUP)"); }
       /* A modem that never answers MSG_CALLING (e.g. stuck in a serial
        * reconnect loop) must not freeze every port forever (audit STAB-M8). */
-      if(accept_pending && time(NULL) - accept_pending_since > 5) {
+      if(accept_pending && mono_now() - accept_pending_since > 5) {
         LOG(LOG_WARN, "Routed call was not accepted within 5 s; releasing the accept gate");
         accept_pending = FALSE;
       }
@@ -256,7 +259,7 @@ int main(int argc, char *argv[]) {
               LOG(LOG_DEBUG, "Routing %s to listening modem #%d", ports[port_idx].name, i);
               cfg[i].line_data.sfd = ports[port_idx].socket;
               writePipe(cfg[i].mp[1][1], MSG_CALLING);
-              accept_pending = TRUE; accept_pending_since = time(NULL);
+              accept_pending = TRUE; accept_pending_since = mono_now();
               break;
             }
           }
@@ -271,7 +274,7 @@ int main(int argc, char *argv[]) {
                 LOG(LOG_DEBUG, "Routing %s to available modem #%d", ports[port_idx].name, i);
                 cfg[i].line_data.sfd = ports[port_idx].socket;
                 writePipe(cfg[i].mp[1][1], MSG_CALLING);
-                accept_pending = TRUE; accept_pending_since = time(NULL);
+                accept_pending = TRUE; accept_pending_since = mono_now();
                 break;
               }
             }
@@ -303,6 +306,7 @@ int main(int argc, char *argv[]) {
     writePipe(cfg[i].mp[1][1], MSG_HANGUP);
   }
   usleep(300000);
+  ser_restore_all();
   webserver_stop();
   {
     const char *sp = dashboard_get_stats_path();

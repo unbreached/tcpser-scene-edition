@@ -240,7 +240,7 @@ int init(int argc,
       case ':':
         usage_error(argv[0], "%s requires an argument", optopt ? optname(optopt) : argv[optind - 1]);
         break;
-      case LO_WEB_BIND: case LO_WEB_TOKEN: case LO_NAME: case LO_IP232_BIND:
+      case LO_WEB_BIND: case LO_WEB_TOKEN: case LO_NAME: case LO_IP232_BIND: case LO_WEB_HOST:
       case LO_BLOCKLIST: case LO_ALLOWLIST: case LO_PHOSPHOR:
         setenv(opt_by_id(opt)->env, optarg, 1);
         break;
@@ -372,6 +372,9 @@ int init(int argc,
       case 'O':
         if(g_check_mode) { opt_writable(argv[0], opt, optarg); connlog_set_path(optarg); }
         else connlog_init(optarg);
+        break;
+      case LO_ANSWER_TIMEOUT:
+        cfg[i].incoming_answer_timeout = opt_clamp(opt, opt_int(argv[0], opt, optarg), 1, 120);
         break;
       case 'm':
         cfg[i].max_session_minutes = opt_clamp(opt, opt_int(argv[0], opt, optarg), 0, 7 * 24 * 60);

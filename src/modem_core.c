@@ -9,6 +9,11 @@
 #include "util.h"
 #include "version.h"
 #include "connlog.h"
+#include "bridge.h"
+#include "ip.h"
+#include "phone_book.h"
+#include <ctype.h>
+#include <pthread.h>
 
 char* mdm_responses[MDM_RESP_END_OF_LIST];
 
@@ -75,7 +80,15 @@ void mdm_init_config(modem_config *cfg) {
   cfg->inactive[0] = 0;
   cfg->direct_conn = FALSE;
   cfg->direct_conn_num[0] = 0;
-  cfg->is_binary_negotiated = FALSE;
+  cfg->gate_pending = FALSE;
+  cfg->gate_abort = FALSE;
+  cfg->gate_baud = -1;
+  cfg->dial_pending = FALSE;
+  cfg->dial_gen = 0;
+  cfg->dial_fd = -1;
+  pthread_mutex_init(&cfg->dial_lock, NULL);
+  cfg->dtr_recheck_at = 0;
+  cfg->last_peer[0] = 0;
 
   cfg->send_responses = TRUE;
   cfg->connect_response = 0;
@@ -352,7 +365,7 @@ int mdm_answer(modem_config *cfg) {
   if(cfg->is_ringing == TRUE) {
     cfg->is_ringing = FALSE;
     cfg->conn_type = MDM_CONN_INCOMING;
-    cfg->conn_established = time(NULL);
+    cfg->conn_established = mono_now();
     off_hook(cfg);
     cfg->is_cmd_mode = FALSE;
     mdm_set_control_lines(cfg);
@@ -370,43 +383,147 @@ int mdm_answer(modem_config *cfg) {
   return 0;
 }
 
+/* ---- outgoing calls -------------------------------------------------------
+ * ATD starts a dial thread and returns at once, so the line's thread keeps
+ * serving the C64 (a keypress aborts the call, like on a real modem), DTR and
+ * the dashboards. The old code ran DNS and a blocking connect() right here:
+ * an unreachable host froze the line for the OS timeout, S7 was ignored, and
+ * a failed call left the modem off-hook so every caller got BUSY. */
+typedef struct { modem_config *cfg; unsigned gen; char number[256]; int s7; int s8; } dial_job;
+
+static int dial_aborted(void *arg) {
+  dial_job *j = (dial_job *)arg;
+  return j->cfg->dial_gen != j->gen;
+}
+
+/* "555-1212" or "(555) 1212" are phone numbers: punctuation is not dialled.
+ * A host name keeps its hyphens ("my-bbs.example.com:6400"). */
+static void dial_clean(const char *in, char *out, size_t outsz) {
+  int numeric = TRUE;
+  size_t o = 0;
+  for(const char *p = in; *p; p++)
+    if(!isdigit((unsigned char)*p) && !strchr(" -(),*#", *p)) { numeric = FALSE; break; }
+  for(const char *p = in; *p && o < outsz - 1; p++) {
+    if(*p == ',' || *p == ' ') continue;
+    if(numeric && (*p == '-' || *p == '(' || *p == ')')) continue;
+    out[o++] = *p;
+  }
+  out[o] = 0;
+}
+
+static void *dial_thread(void *arg) {
+  dial_job *j = (dial_job *)arg;
+  modem_config *cfg = j->cfg;
+  char raw[256], number[256], address[PH_ENTRY_SIZE];
+  int why = IP_ERR_OTHER;
+  int fd = -1;
+  int pauses = 0;
+
+  /* commas pause S8 seconds each, in slices so a cancelled call stops waiting */
+  for(const char *p = j->number; *p; p++) if(*p == ',') pauses++;
+  for(int ms = pauses * j->s8 * 1000; ms > 0 && !dial_aborted(j); ms -= 100) usleep(100000);
+
+  if(!dial_aborted(j)) {
+    /* the phone book is searched with the number as typed first, then cleaned */
+    size_t o = 0;
+    for(const char *p = j->number; *p && o < sizeof(raw) - 1; p++) if(*p != ',') raw[o++] = *p;
+    raw[o] = 0;
+    pb_search(raw, address);
+    if(strcmp(address, raw) == 0) {
+      dial_clean(j->number, number, sizeof(number));
+      pb_search(number, address);
+    }
+    LOG(LOG_INFO, "Dialling %s", address);
+    fd = ip_connect_ex(address, j->s7, dial_aborted, j, &why);
+  } else why = IP_ERR_ABORTED;
+
+  pthread_mutex_lock(&cfg->dial_lock);
+  if(cfg->dial_gen == j->gen && cfg->dial_pending) {
+    cfg->dial_fd = fd;
+    cfg->dial_why = why;
+    writePipe(cfg->cp[0][1], MSG_DIAL_DONE);
+  } else if(fd >= 0) {
+    close(fd);      /* cancelled while we were connecting */
+  }
+  pthread_mutex_unlock(&cfg->dial_lock);
+  free(j);
+  return NULL;
+}
+
+/* Cancel an outgoing call that is still being set up. */
+void mdm_dial_abort(modem_config *cfg) {
+  pthread_mutex_lock(&cfg->dial_lock);
+  if(cfg->dial_pending) {
+    cfg->dial_pending = FALSE;
+    cfg->dial_gen++;
+    if(cfg->dial_fd >= 0) { close(cfg->dial_fd); cfg->dial_fd = -1; }
+  }
+  pthread_mutex_unlock(&cfg->dial_lock);
+}
+
+/* The dial thread reported (MSG_DIAL_DONE): finish the call on the line's thread. */
+void mdm_dial_done(modem_config *cfg) {
+  int fd, why;
+
+  pthread_mutex_lock(&cfg->dial_lock);
+  if(!cfg->dial_pending) { pthread_mutex_unlock(&cfg->dial_lock); return; }
+  cfg->dial_pending = FALSE;
+  cfg->dial_gen++;
+  fd = cfg->dial_fd;
+  why = cfg->dial_why;
+  cfg->dial_fd = -1;
+  pthread_mutex_unlock(&cfg->dial_lock);
+
+  if(fd >= 0) {
+    line_attach(&cfg->line_data, fd);
+    cfg->conn_type = MDM_CONN_OUTGOING;
+    cfg->conn_established = mono_now();
+    mdm_set_control_lines(cfg);
+    mdm_print_speed(cfg);
+    return;
+  }
+  /* No connection: back on-hook in command mode, so the next caller rings
+   * and the next command is not swallowed. X3 and up report why. */
+  cfg->is_off_hook = FALSE;
+  cfg->is_cmd_mode = TRUE;
+  if(cfg->response_code_level >= 3 && why == IP_ERR_REFUSED) mdm_send_response(MDM_RESP_BUSY, cfg);
+  else if(cfg->response_code_level >= 3 && why == IP_ERR_TIMEOUT) mdm_send_response(MDM_RESP_NO_ANSWER, cfg);
+  else mdm_send_response(MDM_RESP_NO_CARRIER, cfg);
+  usleep(cfg->disconnect_delay * 1000);
+}
+
 int mdm_connect(modem_config *cfg) {
+  if(cfg->conn_type != MDM_CONN_NONE) {
+    /* already online (ATD from online command mode): same as ATO */
+    off_hook(cfg);
+    cfg->is_cmd_mode = FALSE;
+    return 0;
+  }
+  if(cfg->line_data.is_connected == TRUE) {
+    /* An incoming caller holds the line (ringing, or still in the gate).
+     * Dialling used to overwrite that caller's socket, leaking it and
+     * leaving the caller connected to nothing. */
+    LOG(LOG_INFO, "ATD refused: an incoming call is pending on this line");
+    mdm_send_response(MDM_RESP_BUSY, cfg);
+    return 0;
+  }
+  mdm_dial_abort(cfg);
+  dial_job *j = (dial_job *)calloc(1, sizeof(*j));
+  if(!j) { mdm_send_response(MDM_RESP_ERROR, cfg); return 0; }
   off_hook(cfg);
   cfg->is_cmd_mode = FALSE;
-  if(cfg->conn_type == MDM_CONN_NONE) {
-    /* Handle dial modifiers: commas = pause (S8 register seconds each) */
-    {
-      char *s = cfg->dialno;
-      while(*s == ',') {
-        LOG(LOG_DEBUG, "Dial pause (%d seconds)", cfg->s[S_REG_COMMA_PAUSE]);
-        usleep((unsigned int)cfg->s[S_REG_COMMA_PAUSE] * 1000000);
-        s++;
-      }
-      /* Strip remaining commas and dial modifiers from the number */
-      char clean[256];
-      int ci = 0;
-      for(int di = 0; cfg->dialno[di] && ci < (int)sizeof(clean) - 1; di++) {
-        char c = cfg->dialno[di];
-        if(c == ',') {
-          /* Pause already handled for leading commas; embedded commas just pause */
-          usleep((unsigned int)cfg->s[S_REG_COMMA_PAUSE] * 1000000);
-        } else if(c != ' ' && c != '-' && c != '(' && c != ')') {
-          clean[ci++] = c;
-        }
-      }
-      clean[ci] = '\0';
-      snprintf(cfg->dialno, sizeof(cfg->dialno), "%s", clean);
-    }
-    if(line_connect(&cfg->line_data, cfg->dialno) == 0) {
-      cfg->conn_type = MDM_CONN_OUTGOING;
-      cfg->conn_established = time(NULL);
-      mdm_set_control_lines(cfg);
-      mdm_print_speed(cfg);
-    } else {
-      mdm_send_response(MDM_RESP_NO_CARRIER, cfg);
-      usleep(cfg->disconnect_delay * 1000);
-    }
-  }
+  pthread_mutex_lock(&cfg->dial_lock);
+  cfg->dial_gen++;
+  cfg->dial_fd = -1;
+  cfg->dial_pending = TRUE;
+  j->cfg = cfg;
+  j->gen = cfg->dial_gen;
+  pthread_mutex_unlock(&cfg->dial_lock);
+  snprintf(j->number, sizeof(j->number), "%s", cfg->dialno);
+  j->s7 = cfg->s[S_REG_CARRIER_WAIT] > 0 ? cfg->s[S_REG_CARRIER_WAIT] : 50;
+  j->s8 = cfg->s[S_REG_COMMA_PAUSE];
+  snprintf(cfg->last_peer, sizeof(cfg->last_peer), "%s", cfg->dialno);
+  spawn_thread((void *)dial_thread, (void *)j, "DIAL");
   return 0;
 }
 
@@ -414,37 +531,78 @@ int mdm_listen(modem_config *cfg) {
   return line_listen(&cfg->line_data);
 }
 
+/* Send a screen file to the C64 side (-c / -a). */
+int mdm_write_file(modem_config *cfg, const char *path) {
+  unsigned char buf[256];
+  size_t n;
+  FILE *f = fopen(path, "rb");
+  if(!f) { LOG(LOG_WARN, "Could not open file %s to send", path); return -1; }
+  while((n = fread(buf, 1, sizeof(buf), f)) > 0) mdm_write(cfg, buf, (int)n);
+  fclose(f);
+  return 0;
+}
+
 int mdm_disconnect(modem_config* cfg, unsigned char force) {
+  return mdm_hangup(cfg, force, FALSE);
+}
+
+/* Hang up. Result codes follow Hayes: a call that was up ends with one
+ * NO CARRIER, unless an AT command asked for the hangup (quiet), in which
+ * case that command's OK is the only result. Hanging up an idle line says
+ * nothing: the old code sent an extra OK here, so idle ATH answered OK twice
+ * and a late "peer closed" event produced a stray OK after NO CARRIER. */
+int mdm_hangup(modem_config* cfg, unsigned char force, int quiet) {
   int type;
+  extern void dashboard_line_closed(int);
+  extern void dashboard_line_bytes(int, long *, long *);
+  extern void dashboard_line_state(int, int, const char *);
 
   LOG_ENTER();
   LOG(LOG_INFO, "Disconnecting modem");
+  mdm_dial_abort(cfg);
   cfg->is_cmd_mode = TRUE;
   cfg->is_off_hook = FALSE;
   cfg->break_len = 0;
-  cfg->is_ringing = FALSE;
   cfg->pre_break_delay = FALSE;
-  cfg->is_binary_negotiated = FALSE;
+  cfg->dtr_recheck_at = 0;
   if(cfg->direct_conn && !force) {
     LOG(LOG_INFO, "Direct connection active, maintaining link");
+    cfg->is_ringing = FALSE;
+  } else if(cfg->gate_pending) {
+    /* A caller is still in the pre-connect gate; the gate thread owns that
+     * socket. The BBS hanging up its idle modem (ATH in an init string) must
+     * not throw the caller out; an operator hangup cancels the gate. */
+    if(force) {
+      cfg->gate_abort = TRUE;
+      line_abort(&cfg->line_data);
+    }
   } else {
     /* Notify dashboard of disconnect (only if actually connected) */
     if(cfg->conn_type != MDM_CONN_NONE) {
-      extern void dashboard_line_closed(int);
+      /* Log session end with duration and byte counts (the counts were
+       * always written as 0) */
+      long bin = 0, bout = 0;
+      dashboard_line_bytes(cfg->idx, &bin, &bout);
       dashboard_line_closed(cfg->idx);
-      /* Log session end with duration */
       if(cfg->conn_established > 0) {
-        int dur = (int)(time(NULL) - cfg->conn_established);
-        connlog_session_end(cfg->line_data.peer_ip, dur, 0, 0);
+        int dur = (int)(mono_now() - cfg->conn_established);
+        connlog_session_end(cfg->last_peer, dur, bin, bout);
       }
+    } else if(cfg->line_data.is_connected == TRUE) {
+      /* a caller was ringing and never got answered */
+      dashboard_line_state(cfg->idx, 0, NULL);
+      connlog_event(cfg->line_data.peer_ip, CONNLOG_NO_ANSWER);
     }
+    cfg->is_ringing = FALSE;
+    cfg->incoming_waiting_answer = FALSE;
+    cfg->incoming_answer_deadline = 0;
     line_disconnect(&cfg->line_data);
     type = cfg->conn_type;
     cfg->conn_type = MDM_CONN_NONE;
     cfg->conn_established = 0;
     mdm_set_control_lines(cfg);
     if(type != MDM_CONN_NONE) {
-      mdm_send_response(MDM_RESP_NO_CARRIER, cfg);
+      if(!quiet) mdm_send_response(MDM_RESP_NO_CARRIER, cfg);
       /* Assert DCD inactive briefly so the C64's 6551 (which polls DCD) sees the
        * carrier-loss edge, then restore normal lines. One settle is enough — the
        * normal DCD high->low transition already happened via the
@@ -454,10 +612,6 @@ int mdm_disconnect(modem_config* cfg, unsigned char force) {
       dce_set_control_lines(&cfg->dce_data, 0);
       usleep(200000);
       mdm_set_control_lines(cfg);
-      usleep(cfg->disconnect_delay * 1000);
-    } else {
-      // ath0 after just off hook
-      mdm_send_response(MDM_RESP_OK, cfg);
       usleep(cfg->disconnect_delay * 1000);
     }
     cfg->rings = 0;
@@ -584,11 +738,11 @@ int mdm_parse_cmd(modem_config* cfg) {
           if(num == 0) {
             /* Ignore ATH0 during connection grace period (BBS init race) */
             if(cfg->conn_established > 0 &&
-               (time(NULL) - cfg->conn_established) < 5 &&
+               (mono_now() - cfg->conn_established) < 5 &&
                cfg->is_ringing) {
               LOG(LOG_INFO, "ATH0 ignored (ringing, within grace period)");
             } else {
-              mdm_disconnect(cfg, FALSE);
+              mdm_hangup(cfg, FALSE, TRUE);   /* the command's OK is the result */
             }
           } else if(num == 1) {
             mdm_off_hook(cfg);
@@ -622,7 +776,7 @@ int mdm_parse_cmd(modem_config* cfg) {
         }
         break;
       case 'L':   // Speaker volume
-        if(num < 1 || num > 3)
+        if(num < 0 || num > 3)   /* L0 is valid (ATM0L0 is a common init string) */
           cmd = AT_CMD_ERR;
         else {
           //cfg->volume = num;
@@ -729,7 +883,7 @@ int mdm_parse_cmd(modem_config* cfg) {
            * if online. Used to reset compiled-in defaults — wiping inverted
            * DCD, &C0 and &K3 — and never answered OK. */
           if(cfg->conn_type != MDM_CONN_NONE) {
-            mdm_disconnect(cfg, FALSE);
+            mdm_hangup(cfg, FALSE, TRUE);
           }
           mdm_reset_profile(cfg);
           if(cfg->is_cmd_mode == TRUE)
@@ -786,8 +940,9 @@ int mdm_parse_cmd(modem_config* cfg) {
         break;
       case AT_CMD_FLAG_EXT + 'D':
         // DTR behavior
-        // &D0 ignore, &D1 command mode (keep carrier), &D2 hang up
-        if (num < 0 || num > 2) {
+        // &D0 ignore, &D1 command mode (keep carrier), &D2 hang up,
+        // &D3 hang up and reset to the stored profile
+        if (num < 0 || num > 3) {
           cmd = AT_CMD_ERR;
         } else {
           cfg->dtr_mode = num;
@@ -866,6 +1021,7 @@ int mdm_handle_char(modem_config *cfg, unsigned char ch) {
       cfg->cur_line_idx = cfg->last_line_idx;
       mdm_parse_cmd(cfg);
       cfg->is_cmd_started = FALSE;
+      cfg->first_ch = 0;      /* one A/ = one repeat; every further '/' used to repeat again */
     } else if((ch_raw & 0x5f) != 'A') {
       cfg->first_ch = 0;
     }
@@ -927,7 +1083,15 @@ int mdm_parse_data(modem_config *cfg, unsigned char *data, int len) {
       mdm_handle_char(cfg, data[i]);
     }
   } else {
-    line_write(&cfg->line_data, data, len);
+    if(line_write(&cfg->line_data, data, len) < 0 && cfg->conn_type != MDM_CONN_NONE) {
+      /* The peer is gone or has not read anything for TCPSER_SEND_TIMEOUT
+       * seconds. Waiting longer would block this line's thread (no DTR
+       * hangup, no session limit, no dashboard hangup) for as long as the
+       * peer likes. */
+      LOG(LOG_WARN, "Caller on line %d is not reading (or is gone); hanging up", cfg->idx);
+      mdm_disconnect(cfg, FALSE);
+      return 0;
+    }
     if(cfg->pre_break_delay == TRUE) {
       for(i = 0; i < len; i++) {
         if(dce_strip_parity(&cfg->dce_data, data[i])  == (unsigned char)cfg->s[S_REG_BREAK]) {

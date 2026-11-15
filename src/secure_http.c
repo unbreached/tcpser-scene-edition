@@ -135,14 +135,14 @@ int parse_http_request_safe(const char *buffer, size_t buffer_len, http_request_
 
     /* Copy path with bounds checking */
     if (strlen(token) >= sizeof(request->path)) {
-        LOG(LOG_ERROR, "HTTP path too long: %s", token);
+        LOG(LOG_ERROR, "HTTP path too long: %.*s", (int)strcspn(token, "?"), token);   /* never log the query: it may hold the token */
         return -1;
     }
     strcpy(request->path, token);
 
     /* Validate path */
     if (!validate_http_path(request->path)) {
-        LOG(LOG_ERROR, "Invalid HTTP path: %s", request->path);
+        LOG(LOG_ERROR, "Invalid HTTP path: %.*s", (int)strcspn(request->path, "?"), request->path);
         return -1;
     }
 
@@ -198,8 +198,11 @@ int parse_http_request_safe(const char *buffer, size_t buffer_len, http_request_
         }
     }
 
-    LOG(LOG_DEBUG, "HTTP request parsed: %s %s %s (Content-Length: %d)",
-        request->method, request->path, request->version, request->content_length);
+    /* log the path without its query string: "/?token=SECRET" is how the
+     * operator signs in, and the log is read by other tools (fail2ban) */
+    LOG(LOG_DEBUG, "HTTP request parsed: %s %.*s %s (Content-Length: %d)",
+        request->method, (int)strcspn(request->path, "?"), request->path,
+        request->version, request->content_length);
 
     return 0;
 }

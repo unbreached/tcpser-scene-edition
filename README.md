@@ -8,7 +8,7 @@
 
 <p align="center">
   <a href="LICENSE"><img alt="License: GPL-2.0" src="https://img.shields.io/badge/license-GPL--2.0-blue"></a>
-  <img alt="Version 1.4.1" src="https://img.shields.io/badge/version-1.4.1-ff2bd6">
+  <img alt="Version 1.4.2" src="https://img.shields.io/badge/version-1.4.2-ff2bd6">
   <img alt="Language: C" src="https://img.shields.io/badge/language-C-29f6ff">
   <img alt="Platforms" src="https://img.shields.io/badge/runs%20on-Linux%20%7C%20Raspberry%20Pi%20%7C%20macOS%20%7C%20BSD-26ff8f">
   <img alt="Hardware" src="https://img.shields.io/badge/C64-SwiftLink%20%7C%20Turbo232%20%7C%20GLINK232%20%7C%20userport-ffb020">
@@ -158,8 +158,9 @@ hotkeys ask `y/N`.
 
 | Key | Action |
 |-----|--------|
-| `H` | Hang up the current caller |
-| `R` | Reset the modem (same as `ATZ`) |
+| `H` | Hang up the caller on the marked line |
+| `R` | Reset the marked line's modem (same as `ATZ`) |
+| `0`–`7` | Mark a line for `H` and `R` on a multi-line BBS (default: the line with a caller) |
 | `B` | Blocklist page |
 | `U` | Clear all timed blocks |
 | `P` | Phosphor green / amber / white |
@@ -217,7 +218,7 @@ Everything below runs **before** any byte reaches the serial port.
 | BACKSPACE×2 gate | `-x` | accepts 0x08, 0x14 (PETSCII DEL) and 0x7F |
 | Password gate | `-k secret` or `-k env:VAR` | Compared case-insensitively with bit 7 stripped (so PETSCII and ASCII callers type the same thing; pick a long password, not a mixed-case one), constant-time compare, guesses capped and throttled per connection; `env:` keeps it out of `ps` |
 | Gate timeout / failures | `-W 20` · `-F 3` | after `-F` failures the IP is blocked permanently |
-| Rate limiting | built in | 5 s minimum between attempts from one IP |
+| Rate limiting | built in | 5 s minimum between attempts from one IP; five rate-limited attempts in a row earn a 10-minute timed block (not written to the file; `U` / F9 clears them) |
 | Blocklist | `TCPSER_BLOCKLIST=/var/lib/tcpser/tcpser.blocklist` | one IPv4 per line, `#` comments, atomic append, reloaded on change |
 | Allowlist | `TCPSER_ALLOWLIST=…` | trusted IPs skip gate, rate limit and blocklist |
 | Gate hook | `-E gate_success_log` | a script **name** in `/usr/local/tcpser/scripts/`; runs detached, caller IP in `TCPSER_PEER_IP`; see [`samples/scripts/README.md`](samples/scripts/README.md) |
@@ -439,6 +440,7 @@ The tables below are generated from the binary (`make docs`).
 | Option | Config key | Description |
 |--------|------------|-------------|
 | `-w`, `--watchdog SECONDS` | `watchdog` | BBS watchdog: toggle DTR if the BBS does not re-arm after a disconnect (default 120 s, 0 = off, max 600). |
+| `--answer-timeout SECONDS` | `answer-timeout` | How long the BBS may take to answer a ringing call before the caller gets the no-answer screen (default 10 s, max 120). With `S0=n` auto-answer the wait is extended to cover `n` rings. |
 | `-m`, `--max-session MINUTES` | `max-session` | Maximum session time in minutes (default 0 = unlimited). |
 
 **Monitoring / notify**
@@ -449,6 +451,7 @@ The tables below are generated from the binary (`make docs`).
 | `-H`, `--web PORT` | `web` | Web console and Prometheus `/metrics` on `PORT`. Binds `127.0.0.1` unless `--web-bind` says otherwise. |
 | `--web-bind ADDR` | `web-bind` | Bind address of the web console (default `127.0.0.1`; expose only behind nginx + TLS). Also `TCPSER_DASH_BIND`. |
 | `--web-token TOKEN` | `web-token` | Require `?token=TOKEN` once to sign in to the web console (letters, digits, `-`, `_`, `.`). Prefer the environment variable: a token on the command line is visible in `ps`. Also `TCPSER_DASH_TOKEN`. |
+| `--web-host NAME[,NAME]` | `web-host` | Host names the web console answers to when no token is set (comma separated). Without a token it otherwise accepts only an IP address or `localhost` in the `Host` header, which stops DNS-rebinding attacks from web pages. Also `TCPSER_DASH_HOST`. |
 | `--web-traffic` | `web-traffic` | Include payload content in the web traffic feed (callers' keystrokes; keep it behind a token). Also `TCPSER_DASH_TRAFFIC`. |
 | `--name NAME` | `name` | BBS name shown in the web console header. Also `TCPSER_DASH_NAME`. |
 | `-e`, `--webhook URL` | `webhook` | Webhook URL for connection events (Discord, Slack, ntfy or plain JSON POST). Repeatable, up to 8. |
@@ -476,6 +479,7 @@ The tables below are generated from the binary (`make docs`).
 | `TCPSER_ALLOWLIST` | allowlist file | `tcpser.allowlist` in the working directory |
 | `TCPSER_DASH_BIND` | web dashboard bind address | `127.0.0.1` |
 | `TCPSER_DASH_TOKEN` | require `?token=…` on the dashboard | none |
+| `TCPSER_DASH_HOST` | host names the dashboard answers to without a token (it otherwise accepts only an IP address or `localhost` in `Host`, against DNS rebinding) | none |
 | `TCPSER_DASH_TRAFFIC` | `1` = include payload bytes in the traffic feed | off |
 | `TCPSER_DASH_NAME` | BBS name shown in the dashboard header | `TCPSER` |
 | `TCPSER_IP232_BIND` | bind address of the `-v` listener | `127.0.0.1` |

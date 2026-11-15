@@ -1,6 +1,7 @@
 #include <sys/file.h>
 #include <unistd.h>
 #include <termios.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <fcntl.h>
 #include <sys/ioctl.h>
@@ -9,6 +10,7 @@
 #include <poll.h>
 #include "dce.h"
 #include "debug.h"
+#include "util.h"
 
 #include "serial.h"
 
@@ -123,6 +125,39 @@ int ser_get_bps_const(int speed) {
 
 }
 
+/* The port settings found at open are put back at exit, so the next program
+ * to use the adapter (minicom, a getty) does not inherit raw mode, our speed
+ * and flow control. One entry per device name; a re-plugged device reuses its
+ * entry. */
+#define SER_SAVED_MAX 16
+static struct { char tty[256]; int fd; struct termios tio; int used; } g_saved[SER_SAVED_MAX];
+static pthread_mutex_t g_saved_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+static void ser_remember(const char *tty, int fd, const struct termios *tio) {
+  pthread_mutex_lock(&g_saved_mutex);
+  int slot = -1;
+  for(int i = 0; i < SER_SAVED_MAX; i++) {
+    if(g_saved[i].used && strcmp(g_saved[i].tty, tty) == 0) { slot = i; break; }
+    if(!g_saved[i].used && slot < 0) slot = i;
+  }
+  if(slot >= 0) {
+    if(!g_saved[slot].used) {            /* first open: these are the original settings */
+      snprintf(g_saved[slot].tty, sizeof(g_saved[slot].tty), "%s", tty);
+      g_saved[slot].tio = *tio;
+      g_saved[slot].used = 1;
+    }
+    g_saved[slot].fd = fd;
+  }
+  pthread_mutex_unlock(&g_saved_mutex);
+}
+
+void ser_restore_all(void) {
+  pthread_mutex_lock(&g_saved_mutex);
+  for(int i = 0; i < SER_SAVED_MAX; i++)
+    if(g_saved[i].used && g_saved[i].fd >= 0) (void)tcsetattr(g_saved[i].fd, TCSANOW, &g_saved[i].tio);
+  pthread_mutex_unlock(&g_saved_mutex);
+}
+
 int ser_init_conn(char *tty, int speed) {
   int fd = -1;
   struct termios tio;
@@ -149,6 +184,8 @@ int ser_init_conn(char *tty, int speed) {
         LOG(LOG_WARN, "Could not get exclusive access to %s: %s", tty, strerror(errno));
 #endif
 
+      set_cloexec(fd);
+
       // Start from the kernel's current settings to avoid undefined flags.
       // This improves compatibility with a wide range of USB/RS232 adapters.
       if (0 != tcgetattr(fd, &tio)) {
@@ -157,6 +194,7 @@ int ser_init_conn(char *tty, int speed) {
         LOG_EXIT();
         return -1;
       }
+      ser_remember(tty, fd, &tio);
 
       cfmakeraw(&tio);
 

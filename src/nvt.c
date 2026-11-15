@@ -1,4 +1,5 @@
 #include <string.h>
+#include <stdio.h>
 
 #include "debug.h"
 #include "ip.h"
@@ -6,305 +7,253 @@
 
 #include "nvt.h"
 
-void nvt_init_config(nvt_vars *vars) {
-  int i;
+/* Telnet (RFC 854) for the caller side of the line.
+ *
+ * One state machine handles every byte that arrives from the network, with
+ * its state in nvt_vars, so sequences split across reads are parsed correctly
+ * (the old parser dropped or leaked bytes when an IAC straddled two reads,
+ * which corrupted binary uploads). Option negotiation keeps per-option state
+ * (RFC 1143) and is role-aware: we offer ECHO/NAWS/TTYPE only to callers, not
+ * to the BBS the C64 dialled. */
 
-  vars->binary_xmit = FALSE;
-  vars->binary_recv = FALSE;
-  vars->sga_local = FALSE;
-  vars->sga_remote = FALSE;
-  vars->echo_local = FALSE;
-  vars->naws_enabled = FALSE;
+void nvt_init_config(nvt_vars *vars) {
+  memset(vars, 0, sizeof(*vars));
   vars->cols = 80;
   vars->rows = 25;
-  vars->negotiated = FALSE;
-  for (i = 0; i < 256; i++)
-    vars->term[i] = 0;
+  vars->role = NVT_ROLE_SERVER;
+  vars->st = NVT_ST_DATA;
 }
 
-unsigned char get_nvt_cmd_response(unsigned char action, unsigned char type) {
-  unsigned char rc = 0;
-
-  if(type == TRUE) {
-    switch (action) {
-      case NVT_DO:
-        rc = NVT_WILL;
-        break;
-      case NVT_DONT:
-        rc = NVT_WONT;
-        break;
-      case NVT_WILL:
-        rc = NVT_DO;
-        break;
-      case NVT_WONT:
-        rc = NVT_DONT;
-        break;
-    }
-  } else {
-    switch (action) {
-      case NVT_DO:
-      case NVT_DONT:
-        rc = NVT_WONT;
-        break;
-      case NVT_WILL:
-      case NVT_WONT:
-        rc = NVT_DONT;
-        break;
-    }
+static const char *action_name(int action) {
+  switch(action) {
+    case NVT_WILL: return "WILL";
+    case NVT_WONT: return "WONT";
+    case NVT_DO:   return "DO";
+    case NVT_DONT: return "DONT";
   }
-  return rc;
+  return "?";
 }
 
-int parse_nvt_subcommand(dce_config *cfg, int fd, nvt_vars *vars, unsigned char *data, int len) {
-  nvt_option opt;
-  unsigned char resp[100];
-  unsigned char *response = resp + 3;
-  int resp_len = 0;
-  int response_len = 0;
-  char tty_type[] = "VT100";
-  int rc;
-  char buf[50];
-  int slen = 0;
-
-  if(len < 4) return len;  /* need at least IAC SB <opt> <data> */
-  opt = data[2];
-
-  for (rc = 2; rc < len - 1; rc++) {
-    if (NVT_IAC == data[rc])
-      if (NVT_SE == data[rc + 1]) {
-        rc += 2;
-        break;
-      }
-  }
-
-  /* NAWS: IAC SB 31 <cols-hi> <cols-lo> <rows-hi> <rows-lo> IAC SE */
-  if(opt == NVT_OPT_NAWS && rc >= 9) {
-    int cols = (data[3] << 8) | data[4];
-    int rows = (data[5] << 8) | data[6];
-    if(cols > 0 && cols < 500) vars->cols = cols;
-    if(rows > 0 && rows < 500) vars->rows = rows;
-    LOG(LOG_INFO, "NAWS: terminal size %dx%d", vars->cols, vars->rows);
-    return rc;
-  }
-
-  if (rc > 5 && (NVT_SB_SEND == data[3])) {
-    switch(opt) {
-      case NVT_OPT_TERMINAL_TYPE:
-      case NVT_OPT_X_DISPLAY_LOCATION:
-      case NVT_OPT_ENVIRON:
-      case NVT_OPT_NEW_ENVIRON:
-      case NVT_OPT_TERMINAL_SPEED:
-        response[response_len++] = NVT_SB_IS;
-        switch(opt) {
-          case NVT_OPT_TERMINAL_TYPE:
-            slen = strlen(tty_type);
-            memcpy(response + response_len, tty_type, slen);
-            response_len += slen;
-            LOG(LOG_INFO, "Telnet: reporting terminal type %s", tty_type);
-            break;
-          case NVT_OPT_TERMINAL_SPEED:
-            slen = snprintf(buf, sizeof(buf), "%i,%i", cfg->port_speed, cfg->port_speed);
-            if (slen >= (int)sizeof(buf)) slen = sizeof(buf) - 1;
-            if (response_len + slen < 97) {  /* Ensure we don't overflow response buffer */
-              memcpy(response + response_len, buf, slen);
-              response_len += slen;
-              LOG(LOG_INFO, "Telnet: reporting speed %s", buf);
-            } else {
-              LOG(LOG_ERROR, "Telnet response buffer overflow prevented");
-            }
-            break;
-          default:
-            break;
-        }
-        break;
-      default:
-        break;
-    }
-  }
-
-  if (response_len) {
-    resp[resp_len++] = NVT_IAC;
-    resp[resp_len++] = NVT_SB;
-    resp[resp_len++] = opt;
-    resp_len += response_len;
-    resp[resp_len++] = NVT_IAC;
-    resp[resp_len++] = NVT_SE;
-    ip_write(fd, resp, resp_len);
-  }
-  return rc;
-}
-
-int get_action_safe(char *txt, size_t txt_size, nvt_command action) {
-  const char *action_str;
-
-  switch (action) {
-  case NVT_WILL:
-    action_str = "WILL";
-    break;
-  case NVT_WONT:
-    action_str = "WONT";
-    break;
-  case NVT_DO:
-    action_str = "DO";
-    break;
-  case NVT_DONT:
-    action_str = "DONT";
-    break;
-  default:
-    action_str = "UNKNOWN";
-    break;
-  }
-
-  return snprintf(txt, txt_size, "%s", action_str);
-}
-
-int send_nvt_command(int fd, nvt_vars *vars, nvt_command action, nvt_option opt) {
+static void send_cmd(int fd, int action, int opt) {
   unsigned char cmd[3];
-  char txt[20];
-
-  get_action_safe(txt, sizeof(txt), action);
-  LOG(LOG_DEBUG, "Sending NVT command: %s %d", txt, opt);
+  LOG(LOG_DEBUG, "Sending NVT command: %s %d", action_name(action), opt);
   cmd[0] = NVT_IAC;
-  cmd[1] = action;
-  cmd[2] = opt;
-
+  cmd[1] = (unsigned char)action;
+  cmd[2] = (unsigned char)opt;
   ip_write(fd, cmd, 3);
-  vars->term[opt] = action;
-
-  return 0;
 }
 
-int parse_nvt_command(dce_config *cfg, int fd, nvt_vars *vars, nvt_command action, nvt_option opt) {
-  int accept = FALSE;
-  char txt[20];
-  int resp;
+static void sync_flags(nvt_vars *v) {
+  v->binary_xmit = v->us[NVT_OPT_TRANSMIT_BINARY] == NVT_Q_YES;
+  v->binary_recv = v->him[NVT_OPT_TRANSMIT_BINARY] == NVT_Q_YES;
+  v->echo_local = v->us[NVT_OPT_ECHO] == NVT_Q_YES;
+  v->sga_local = v->us[NVT_OPT_SUPPRESS_GO_AHEAD] == NVT_Q_YES;
+  v->sga_remote = v->him[NVT_OPT_SUPPRESS_GO_AHEAD] == NVT_Q_YES;
+  v->naws_enabled = v->him[NVT_OPT_NAWS] == NVT_Q_YES;
+}
 
-  get_action_safe(txt, sizeof(txt), action);
-  LOG(LOG_DEBUG, "Received NVT command: %s %d", txt, opt);
-  switch (opt) {
-    case NVT_OPT_TRANSMIT_BINARY:
-      switch (action) {
-        case NVT_DO:
-          if(!dce_get_parity(cfg)) {
-            LOG(LOG_INFO, "Enabling telnet binary xmit");
-            vars->binary_xmit = TRUE;
-            accept = TRUE;
-          }
-          break;
-        case NVT_DONT:
-          LOG(LOG_INFO, "Disabling telnet binary xmit");
-          vars->binary_xmit = FALSE;
-          accept = TRUE;
-          break;
-        case NVT_WILL:
-          if(!dce_get_parity(cfg)) {
-            LOG(LOG_INFO, "Enabling telnet binary recv");
-            vars->binary_recv = TRUE;
-            accept = TRUE;
-          }
-          break;
-        case NVT_WONT:
-          LOG(LOG_INFO, "Disabling telnet binary recv");
-          vars->binary_recv = FALSE;
-          accept = TRUE;
-          break;
-        default:
-          break;
-      }
-      resp = get_nvt_cmd_response(action, accept);
-      break;
-    case NVT_OPT_ECHO:
-      /* Track echo state */
-      if(action == NVT_DO) {
-        vars->echo_local = TRUE;
-        LOG(LOG_INFO, "Telnet: peer accepted ECHO");
-      } else if(action == NVT_DONT) {
-        vars->echo_local = FALSE;
-      }
-      resp = get_nvt_cmd_response(action, TRUE);
-      break;
-    case NVT_OPT_SUPPRESS_GO_AHEAD:
-      /* Track SGA state */
-      if(action == NVT_DO) {
-        vars->sga_local = TRUE;
-        LOG(LOG_INFO, "Telnet: peer accepted SGA (local)");
-      } else if(action == NVT_WILL) {
-        vars->sga_remote = TRUE;
-        LOG(LOG_INFO, "Telnet: peer will SGA (remote)");
-      }
-      resp = get_nvt_cmd_response(action, TRUE);
-      break;
-    case NVT_OPT_NAWS:
-      /* Accept NAWS — actual size arrives in subnegotiation */
-      if(action == NVT_WILL) {
-        vars->naws_enabled = TRUE;
-        LOG(LOG_INFO, "Telnet: peer supports NAWS");
-      }
-      resp = get_nvt_cmd_response(action, TRUE);
-      break;
+/* May WE enable this option when the peer says DO? */
+static int us_ok(dce_config *cfg, nvt_vars *v, int opt) {
+  switch(opt) {
+    case NVT_OPT_TRANSMIT_BINARY:   return dce_get_parity(cfg) == 0;
+    case NVT_OPT_SUPPRESS_GO_AHEAD: return TRUE;
+    case NVT_OPT_ECHO:              return v->role == NVT_ROLE_SERVER;
     case NVT_OPT_TERMINAL_TYPE:
-    case NVT_OPT_X_DISPLAY_LOCATION:
-    case NVT_OPT_ENVIRON:
-    case NVT_OPT_NEW_ENVIRON:
-    case NVT_OPT_TERMINAL_SPEED:
-      resp = get_nvt_cmd_response(action, TRUE);
+    case NVT_OPT_TERMINAL_SPEED:    return v->role == NVT_ROLE_CLIENT;
+  }
+  return FALSE;
+}
+
+/* May the PEER enable this option when it says WILL? */
+static int him_ok(dce_config *cfg, nvt_vars *v, int opt) {
+  switch(opt) {
+    case NVT_OPT_TRANSMIT_BINARY:   return dce_get_parity(cfg) == 0;
+    case NVT_OPT_SUPPRESS_GO_AHEAD: return TRUE;
+    case NVT_OPT_ECHO:              return v->role == NVT_ROLE_CLIENT;
+    case NVT_OPT_NAWS:
+    case NVT_OPT_TERMINAL_TYPE:     return v->role == NVT_ROLE_SERVER;
+  }
+  return FALSE;
+}
+
+static void handle_option(dce_config *cfg, int fd, nvt_vars *v, int action, int opt) {
+  LOG(LOG_DEBUG, "Received NVT command: %s %d", action_name(action), opt);
+  switch(action) {
+    case NVT_WILL:
+      if(v->him[opt] == NVT_Q_YES) break;                       /* no change: no reply */
+      if(v->him[opt] == NVT_Q_WANTYES) { v->him[opt] = NVT_Q_YES; }
+      else if(him_ok(cfg, v, opt)) { v->him[opt] = NVT_Q_YES; send_cmd(fd, NVT_DO, opt); }
+      else { send_cmd(fd, NVT_DONT, opt); break; }
+      if(opt == NVT_OPT_TERMINAL_TYPE) {
+        unsigned char ask[6] = { NVT_IAC, NVT_SB, NVT_OPT_TERMINAL_TYPE, NVT_SB_SEND, NVT_IAC, NVT_SE };
+        ip_write(fd, ask, sizeof(ask));
+      }
       break;
-    default:
-      /* Refuse unknown options per RFC 854 */
-      resp = get_nvt_cmd_response(action, FALSE);
+    case NVT_WONT:
+      if(v->him[opt] == NVT_Q_YES) send_cmd(fd, NVT_DONT, opt);
+      v->him[opt] = NVT_Q_NO;
+      break;
+    case NVT_DO:
+      if(v->us[opt] == NVT_Q_YES) break;
+      if(v->us[opt] == NVT_Q_WANTYES) { v->us[opt] = NVT_Q_YES; }
+      else if(us_ok(cfg, v, opt)) { v->us[opt] = NVT_Q_YES; send_cmd(fd, NVT_WILL, opt); }
+      else send_cmd(fd, NVT_WONT, opt);
+      break;
+    case NVT_DONT:
+      if(v->us[opt] == NVT_Q_YES) send_cmd(fd, NVT_WONT, opt);
+      v->us[opt] = NVT_Q_NO;
       break;
   }
-  send_nvt_command(fd, vars, resp, opt);
-  return 0;
+  sync_flags(v);
+}
+
+static void handle_subneg(dce_config *cfg, int fd, nvt_vars *v) {
+  unsigned char resp[96];
+  int n = 0;
+  int opt;
+
+  if(v->sb_len < 1) return;
+  opt = v->sb[0];
+
+  if(opt == NVT_OPT_NAWS && v->sb_len >= 5) {
+    int cols = (v->sb[1] << 8) | v->sb[2];
+    int rows = (v->sb[3] << 8) | v->sb[4];
+    if(cols > 0 && cols < 500) v->cols = cols;
+    if(rows > 0 && rows < 500) v->rows = rows;
+    LOG(LOG_INFO, "NAWS: terminal size %dx%d", v->cols, v->rows);
+    return;
+  }
+  if(opt == NVT_OPT_TERMINAL_TYPE && v->sb_len >= 2 && v->sb[1] == NVT_SB_IS) {
+    int k = 0;
+    for(int i = 2; i < v->sb_len && k < (int)sizeof(v->ttype) - 1; i++) {
+      unsigned char c = v->sb[i];
+      v->ttype[k++] = (c >= 0x21 && c < 0x7f) ? (char)c : '?';   /* printable only: it goes to the log */
+    }
+    v->ttype[k] = 0;
+    LOG(LOG_INFO, "Telnet: caller terminal type %s", v->ttype);
+    return;
+  }
+  if(v->sb_len >= 2 && v->sb[1] == NVT_SB_SEND) {
+    char text[40];
+    text[0] = 0;
+    if(opt == NVT_OPT_TERMINAL_TYPE && v->us[opt] == NVT_Q_YES) {
+      snprintf(text, sizeof(text), "VT100");
+      LOG(LOG_INFO, "Telnet: reporting terminal type %s", text);
+    } else if(opt == NVT_OPT_TERMINAL_SPEED && v->us[opt] == NVT_Q_YES) {
+      snprintf(text, sizeof(text), "%i,%i", cfg->port_speed, cfg->port_speed);
+      LOG(LOG_INFO, "Telnet: reporting speed %s", text);
+    }
+    if(text[0]) {
+      size_t tl = strlen(text);
+      resp[n++] = NVT_IAC; resp[n++] = NVT_SB; resp[n++] = (unsigned char)opt; resp[n++] = NVT_SB_IS;
+      memcpy(resp + n, text, tl); n += (int)tl;
+      resp[n++] = NVT_IAC; resp[n++] = NVT_SE;
+      ip_write(fd, resp, n);
+    }
+  }
 }
 
 /*
- * Proactive telnet negotiation (RFC 854/857/858/1073/1143).
+ * Opening negotiation, sent once when a telnet peer is recognised.
  *
- * Called immediately when we detect a telnet client (IAC as first byte).
- * Announces our capabilities so that well-behaved clients (Linux telnet,
- * PuTTY, SyncTERM, CGTerm, etc.) know what to expect:
- *
- *   WILL ECHO          - we handle echo (prevents double chars)
- *   WILL SGA           - we suppress go-ahead (character-at-a-time mode)
- *   DO   SGA           - request peer to suppress go-ahead too
- *   DO   NAWS          - request window size updates
- *   DO   TERMINAL_TYPE - request terminal type identification
- *   WILL TRANSMIT_BINARY / DO TRANSMIT_BINARY - 8-bit clean
- *
- * This batch is sent as a single write to minimize round-trips.
+ * To a caller (we are the server):
+ *   WILL ECHO, WILL SGA, DO SGA    character-at-a-time, no double echo
+ *   DO NAWS, DO TERMINAL_TYPE      window size and terminal name
+ *   WILL BINARY, DO BINARY         8-bit clean (PETSCII, file transfers)
+ * To a BBS the C64 dialled (we are the client): SGA and BINARY only; ECHO,
+ * NAWS and TTYPE are the server's to ask for.
+ * BINARY is not offered while the C64 side is known to use parity (7 bits).
  */
-void nvt_negotiate_proactive(int fd, nvt_vars *vars) {
-  unsigned char batch[24];
+void nvt_negotiate_proactive(dce_config *cfg, int fd, nvt_vars *v) {
+  unsigned char batch[32];
   int n = 0;
 
-  if(vars->negotiated) return;
-  vars->negotiated = TRUE;
+  if(v->negotiated) return;
+  v->negotiated = TRUE;
 
-  LOG(LOG_INFO, "Telnet: sending proactive negotiation batch");
+  LOG(LOG_INFO, "Telnet: sending opening negotiation (%s role)", v->role == NVT_ROLE_SERVER ? "server" : "client");
+#define OFFER(action, opt) do { \
+    batch[n++] = NVT_IAC; batch[n++] = (action); batch[n++] = (opt); \
+    if((action) == NVT_WILL) { if(v->us[opt] == NVT_Q_NO) v->us[opt] = NVT_Q_WANTYES; } \
+    else { if(v->him[opt] == NVT_Q_NO) v->him[opt] = NVT_Q_WANTYES; } \
+  } while(0)
 
-  /* WILL ECHO */
-  batch[n++] = NVT_IAC; batch[n++] = NVT_WILL; batch[n++] = NVT_OPT_ECHO;
-  /* WILL SGA */
-  batch[n++] = NVT_IAC; batch[n++] = NVT_WILL; batch[n++] = NVT_OPT_SUPPRESS_GO_AHEAD;
-  /* DO SGA */
-  batch[n++] = NVT_IAC; batch[n++] = NVT_DO;   batch[n++] = NVT_OPT_SUPPRESS_GO_AHEAD;
-  /* DO NAWS */
-  batch[n++] = NVT_IAC; batch[n++] = NVT_DO;   batch[n++] = NVT_OPT_NAWS;
-  /* DO TERMINAL_TYPE */
-  batch[n++] = NVT_IAC; batch[n++] = NVT_DO;   batch[n++] = NVT_OPT_TERMINAL_TYPE;
-  /* WILL BINARY */
-  batch[n++] = NVT_IAC; batch[n++] = NVT_WILL; batch[n++] = NVT_OPT_TRANSMIT_BINARY;
-  /* DO BINARY */
-  batch[n++] = NVT_IAC; batch[n++] = NVT_DO;   batch[n++] = NVT_OPT_TRANSMIT_BINARY;
-
+  if(v->role == NVT_ROLE_SERVER) OFFER(NVT_WILL, NVT_OPT_ECHO);
+  OFFER(NVT_WILL, NVT_OPT_SUPPRESS_GO_AHEAD);
+  OFFER(NVT_DO, NVT_OPT_SUPPRESS_GO_AHEAD);
+  if(v->role == NVT_ROLE_SERVER) {
+    OFFER(NVT_DO, NVT_OPT_NAWS);
+    OFFER(NVT_DO, NVT_OPT_TERMINAL_TYPE);
+  }
+  if(dce_get_parity(cfg) == 0) {
+    OFFER(NVT_WILL, NVT_OPT_TRANSMIT_BINARY);
+    OFFER(NVT_DO, NVT_OPT_TRANSMIT_BINARY);
+  }
+#undef OFFER
   ip_write(fd, batch, n);
+}
 
-  vars->echo_local = TRUE;
-  vars->sga_local = TRUE;
-  vars->term[NVT_OPT_ECHO] = NVT_WILL;
-  vars->term[NVT_OPT_SUPPRESS_GO_AHEAD] = NVT_WILL;
-  vars->term[NVT_OPT_NAWS] = NVT_DO;
-  vars->term[NVT_OPT_TERMINAL_TYPE] = NVT_DO;
-  vars->term[NVT_OPT_TRANSMIT_BINARY] = NVT_WILL;
+int nvt_flush_pending(nvt_vars *v, int is_telnet, unsigned char *out) {
+  if(!is_telnet && v->st == NVT_ST_IAC) {
+    v->st = NVT_ST_DATA;
+    out[0] = NVT_IAC;
+    return 1;
+  }
+  return 0;
+}
+
+int nvt_filter(dce_config *cfg, int fd, nvt_vars *v, int *is_telnet, int detect,
+               const unsigned char *in, int len, unsigned char *out) {
+  int o = 0;
+
+  for(int i = 0; i < len; i++) {
+    unsigned char ch = in[i];
+    switch(v->st) {
+      case NVT_ST_DATA:
+      data_byte:
+        if(ch == NVT_IAC && (*is_telnet || detect)) {
+          v->st = NVT_ST_IAC;
+          break;
+        }
+        if(*is_telnet && !v->binary_recv) {
+          /* NVT line ending: CR NUL is a bare CR */
+          if(v->last_cr && ch == 0) { v->last_cr = FALSE; break; }
+          v->last_cr = (ch == '\r');
+        }
+        out[o++] = ch;
+        break;
+      case NVT_ST_IAC:
+        if(!*is_telnet) {
+          /* first 0xFF from an unknown peer: telnet only if a command follows */
+          if(ch >= NVT_SB && ch <= NVT_DONT) {
+            LOG(LOG_INFO, "Detected telnet client");
+            *is_telnet = TRUE;
+            nvt_negotiate_proactive(cfg, fd, v);
+          } else {
+            out[o++] = NVT_IAC;       /* it was data */
+            v->st = NVT_ST_DATA;
+            goto data_byte;
+          }
+        }
+        if(ch == NVT_IAC) { out[o++] = NVT_IAC; v->last_cr = FALSE; v->st = NVT_ST_DATA; }
+        else if(ch >= NVT_WILL && ch <= NVT_DONT) { v->cmd = ch; v->st = NVT_ST_OPT; }
+        else if(ch == NVT_SB) { v->sb_len = 0; v->st = NVT_ST_SB; }
+        else v->st = NVT_ST_DATA;     /* NOP, DM, BRK, AYT, GA ...: nothing to do */
+        break;
+      case NVT_ST_OPT:
+        handle_option(cfg, fd, v, v->cmd, ch);
+        v->st = NVT_ST_DATA;
+        break;
+      case NVT_ST_SB:
+        if(ch == NVT_IAC) v->st = NVT_ST_SB_IAC;
+        else if(v->sb_len < (int)sizeof(v->sb)) v->sb[v->sb_len++] = ch;
+        break;
+      case NVT_ST_SB_IAC:
+        if(ch == NVT_SE) { handle_subneg(cfg, fd, v); v->st = NVT_ST_DATA; }
+        else if(ch == NVT_IAC) { if(v->sb_len < (int)sizeof(v->sb)) v->sb[v->sb_len++] = NVT_IAC; v->st = NVT_ST_SB; }
+        else v->st = NVT_ST_DATA;     /* malformed: drop the subnegotiation */
+        break;
+    }
+  }
+  return o;
 }

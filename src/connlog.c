@@ -3,6 +3,9 @@
 #include <string.h>
 #include <pthread.h>
 #include <sys/stat.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/stat.h>
 #include "connlog.h"
 #include "util.h"
 
@@ -13,10 +16,14 @@ static pthread_mutex_t g_log_mutex = PTHREAD_MUTEX_INITIALIZER;
  * The log records caller IP addresses (PII), so it must not be world-readable
  * regardless of the process umask. */
 static FILE *connlog_open(void) {
-  FILE *f = fopen(g_logpath, "a");
-  if(f) {
-    (void)chmod(g_logpath, S_IRUSR | S_IWUSR);
-  }
+  /* create with 0600 directly: fopen() + chmod() left a moment in which the
+   * new file had the umask's (usually world-readable) mode */
+  int fd = open(g_logpath, O_WRONLY | O_CREAT | O_APPEND, S_IRUSR | S_IWUSR);
+  if(fd < 0) return NULL;
+  set_cloexec(fd);
+  (void)fchmod(fd, S_IRUSR | S_IWUSR);   /* tighten a file made by an older version */
+  FILE *f = fdopen(fd, "a");
+  if(!f) close(fd);
   return f;
 }
 

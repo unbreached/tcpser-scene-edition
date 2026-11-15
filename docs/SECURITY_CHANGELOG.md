@@ -5,6 +5,38 @@
 
 This version includes comprehensive security fixes and production deployment tools.
 
+## 1.4.2 — Review follow-up (2026-11)
+
+From [`REVIEW-2026-11-15.md`](REVIEW-2026-11-15.md). No memory-safety or
+RCE-class issue was found; these are exposure and hardening fixes.
+
+- **DNS rebinding against the web console.** With no token set, any web page
+  the operator visited could point its own host name at `127.0.0.1` and read
+  `/api/status` (caller IPs, history, session content with `--web-traffic`).
+  Without a token the console now answers only when `Host` is an IP address,
+  `localhost`, the bind address, or a name listed with `--web-host` /
+  `TCPSER_DASH_HOST`; anything else gets 403. With a token the cookie is bound
+  to the real origin, so a reverse proxy may pass any public name.
+- **Token in tcpser's own log.** The request line (`/?token=…`) was logged at
+  debug level and on two error paths. Paths are now logged without the query.
+- **File modes.** The connection log and stats file (caller IPs) were created
+  with the umask and `chmod`ed afterwards; they are now created 0600.
+- **Inherited descriptors.** Listening sockets, caller sockets, the serial
+  port, pipes and log files are close-on-exec, so `curl` (webhooks) and `-E`
+  hooks no longer inherit them.
+- **Blocklist growth.** A new ban no longer re-reads the whole file; the
+  in-memory table grows on demand instead of ignoring lines past 512; an IP
+  that keeps hammering the rate limit earns a 10-minute timed block.
+- **Stalled callers.** A caller that stops reading is hung up after 20 s
+  instead of holding the line for as long as it likes.
+- **Web handler pool.** Non-loopback clients are limited to 6 handlers per
+  address.
+
+Open by design (see the review): no dial allowlist for `ATD` (the C64 side is
+trusted; keep `--ip232-bind` on loopback), the gate password is compared
+case-insensitively with bit 7 stripped, and the process does not drop
+privileges itself (use the systemd unit, or `UserName` in the launchd plist).
+
 ## 1.2.4 — Crash fixes (2026-07)
 
 Two memory-safety crashes found while investigating a reproducible segfault

@@ -13,6 +13,7 @@ One path through the docs, in reading order:
 | [`../c64/README.md`](../c64/README.md) | the C64-side link analyzer (6551 registers, cable lines, send AT from the C64) |
 | `man tcpser` · `tcpser -h` | the manual page and built-in help, both generated from the same option table |
 | [`AUDIT-2026-11-01.md`](AUDIT-2026-11-01.md) | the full security / stability / UX audit and the roadmap; the status block at the top says what is done |
+| [`REVIEW-2026-11-15.md`](REVIEW-2026-11-15.md) | follow-up review of 1.4.1: open bugs, improvements and feature ideas as one priority list |
 | [`../CHANGES`](../CHANGES) · [`SECURITY_CHANGELOG.md`](SECURITY_CHANGELOG.md) | release notes and the security history |
 
 Quick answers:

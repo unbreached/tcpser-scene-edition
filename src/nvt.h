@@ -41,6 +41,18 @@ typedef enum {
 #define FALSE 0
 #endif
 
+/* Option state per RFC 1143 (simplified Q method): a request is answered only
+ * when it changes state, so a peer that repeats DO/WILL cannot make us loop. */
+enum { NVT_Q_NO = 0, NVT_Q_YES = 1, NVT_Q_WANTYES = 2 };
+
+/* Which end of the call we are: a caller dialled in (we are the "server"), or
+ * the C64 dialled out with ATD (we are the "client"). */
+enum { NVT_ROLE_SERVER = 0, NVT_ROLE_CLIENT = 1 };
+
+/* Parser state, kept across reads so an IAC sequence split over two TCP
+ * segments is still one sequence. */
+enum { NVT_ST_DATA = 0, NVT_ST_IAC, NVT_ST_OPT, NVT_ST_SB, NVT_ST_SB_IAC };
+
 typedef struct nvt_vars {
   int binary_xmit;
   int binary_recv;
@@ -51,15 +63,26 @@ typedef struct nvt_vars {
   int cols;           /* terminal columns (from NAWS) */
   int rows;           /* terminal rows (from NAWS) */
   int negotiated;     /* proactive negotiation sent */
-  unsigned char term[256];
+  int role;           /* NVT_ROLE_* */
+  unsigned char us[256];    /* NVT_Q_* for options on our side (WILL/WONT) */
+  unsigned char him[256];   /* NVT_Q_* for options on the peer's side (DO/DONT) */
+  int st;             /* NVT_ST_* */
+  unsigned char cmd;  /* WILL/WONT/DO/DONT waiting for its option byte */
+  unsigned char sb[64];
+  int sb_len;
+  int last_cr;        /* previous data byte was CR (for CR NUL) */
+  char ttype[41];     /* peer's terminal type, if it told us */
 } nvt_vars;
 
 void nvt_init_config(nvt_vars *vars);
-unsigned char get_nvt_cmd_response(unsigned char action, unsigned char type);
-int parse_nvt_subcommand(dce_config *cfg, int fd, nvt_vars *vars , unsigned char *data, int len);
-int parse_nvt_command(dce_config *cfg, int fd, nvt_vars *vars, nvt_command action, nvt_option opt);
-int send_nvt_command(int fd, nvt_vars *vars, nvt_command action, nvt_option opt);
-void nvt_negotiate_proactive(int fd, nvt_vars *vars);
-int get_action_safe(char *txt, size_t txt_size, nvt_command action);
+void nvt_negotiate_proactive(dce_config *cfg, int fd, nvt_vars *vars);
+/* Run received bytes through the telnet parser. Data bytes go to out (which
+ * must hold len + 1 bytes); negotiation is answered on fd. *is_telnet is set
+ * when a telnet peer is recognised, which can only happen while detect is
+ * non-zero. Returns the number of data bytes. */
+int nvt_filter(dce_config *cfg, int fd, nvt_vars *vars, int *is_telnet, int detect,
+               const unsigned char *in, int len, unsigned char *out);
+/* Called when the detection window closes: a lone 0xFF still held back is data. */
+int nvt_flush_pending(nvt_vars *vars, int is_telnet, unsigned char *out);
 
 #endif

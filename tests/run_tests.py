@@ -191,8 +191,10 @@ def t_session():
         r = rd(v, 1.0, until=b"OK")
         assert b"OK" in r, f"escape got {r!r}"
         v.sendall(b"ATH0\r")
-        r = rd(v, 2.0, until=b"NO CARRIER")
-        assert b"NO CARRIER" in r, f"ATH0 got {r!r}"
+        r = rd(v, 2.0, until=b"OK")
+        r += rd(v, 0.8)
+        # Hayes: ATH from online command mode answers one OK and nothing else
+        assert r.count(b"OK") == 1 and b"NO CARRIER" not in r, f"ATH0 got {r!r}"
         tail = rd(c, 1.0)
         assert tail == b"" or b"NO CARRIER" in tail or True  # caller socket closes
         v.close(); c.close()
@@ -494,6 +496,299 @@ def t_pty_loss():
         assert lt.count(b"Could not accept") < 50, "accept loop spinning"
     finally:
         srv.stop()
+
+
+def strip232(b):
+    """Remove ip232 control codes (FF 00 / FF 01) and un-double FF FF."""
+    out = bytearray(); i = 0
+    while i < len(b):
+        if b[i] == 0xff and i + 1 < len(b):
+            if b[i + 1] == 0xff:
+                out.append(0xff)
+            i += 2
+            continue
+        out.append(b[i]); i += 1
+    return bytes(out)
+
+
+@test("outgoing calls: failed ATD leaves the line usable, CONNECT works, S7 timeout, ATD during RING is BUSY")
+def t_dial():
+    srv = Server()
+    lst = socket.socket(); lst.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    lst.bind(("127.0.0.1", 0)); lst.listen(1)
+    lport = lst.getsockname()[1]
+    dead = free_port()
+    try:
+        v = srv.vice()
+        v.sendall(b"ATE0\r"); rd(v, 1.0, until=b"OK")
+        # 1. refused: a result code, then the line is on-hook in command mode
+        v.sendall(b"ATDT127.0.0.1:%d\r" % dead)
+        r = strip232(rd(v, 4.0, until=b"\r\n", ) + rd(v, 1.0))
+        assert b"BUSY" in r or b"NO CARRIER" in r, f"refused dial got {r!r}"
+        v.sendall(b"ATI0\r")
+        r = strip232(rd(v, 2.0, until=b"OK"))
+        assert b"TCPSER" in r, f"command after a failed dial was swallowed: {r!r}"
+        c = srv.caller()
+        r = strip232(rd(v, 3.0, until=b"RING"))
+        assert b"RING" in r, f"caller after a failed dial did not ring (line stuck busy?): {r!r}"
+        # 2. ATD while that call is ringing: BUSY, the caller is not dropped
+        v.sendall(b"ATDT127.0.0.1:%d\r" % lport)
+        r = strip232(rd(v, 2.0, until=b"BUSY"))
+        assert b"BUSY" in r, f"ATD during RING got {r!r}"
+        v.sendall(b"ATA\r")
+        r = strip232(rd(v, 3.0, until=b"CONNECT"))
+        assert b"CONNECT" in r, f"ringing caller was lost by the ATD: {r!r}"
+        rd(c, 0.5); c.sendall(b"still here\r"); r = strip232(rd(v, 1.5, until=b"still here"))
+        assert b"still here" in r, r
+        c.close()
+        r = strip232(rd(v, 3.0, until=b"NO CARRIER"))
+        assert b"NO CARRIER" in r, r
+        time.sleep(0.5); rd(v, 0.3)
+        # 3. a call that connects; host name beginning with L is not "redial"
+        v.sendall(b"ATDlocalhost:%d\r" % lport)
+        lst.settimeout(5); rem, _ = lst.accept()
+        r = strip232(rd(v, 3.0, until=b"CONNECT"))
+        assert b"CONNECT" in r, f"dial got {r!r}"
+        rem.sendall(b"from remote\r"); v.sendall(b"from c64\r")
+        assert b"from remote" in strip232(rd(v, 1.5, until=b"remote"))
+        assert b"from c64" in rd(rem, 1.5, until=b"c64")
+        rem.close()
+        r = strip232(rd(v, 3.0, until=b"NO CARRIER"))
+        assert r.count(b"NO CARRIER") == 1 and b"OK" not in r, f"remote hangup got {r!r}"
+        time.sleep(0.5); rd(v, 0.3)
+        # 4. nobody answers: S7 bounds the wait and the line stays responsive
+        blk = socket.socket(); blk.bind(("127.0.0.1", 0)); blk.listen(0)
+        fill = []
+        for _ in range(8):      # fill the accept queue so further SYNs hang
+            f = socket.socket(); f.setblocking(False)
+            try: f.connect(blk.getsockname())
+            except OSError: pass
+            fill.append(f)
+        v.sendall(b"ATS7=2DT127.0.0.1:%d\r" % blk.getsockname()[1])
+        t0 = time.time()
+        r = strip232(rd(v, 8.0, until=b"\r\n") + rd(v, 0.5))
+        took = time.time() - t0
+        assert took < 7 and (b"NO ANSWER" in r or b"NO CARRIER" in r or b"CONNECT" in r), f"S7 dial took {took:.1f}s, got {r!r}"
+        for f in fill: f.close()
+        blk.close()
+        assert srv.alive()
+    finally:
+        lst.close()
+        srv.stop()
+
+
+@test("telnet: negotiation survives the gate, split IAC, BINARY before the first AT, raw callers keep 0xFF")
+def t_telnet():
+    IAC, WILL, WONT, DO, DONT = 255, 251, 252, 253, 254
+    srv = Server("-x", "-i", "S0=1")
+    try:
+        v = srv.vice()          # note: no AT typed, parity is still "unknown"
+        c = srv.caller()
+        rd(c, 0.8)
+        c.sendall(bytes([IAC, DO, 3, IAC, WILL, 0]))     # a telnet client opens with negotiation
+        time.sleep(0.3)
+        c.sendall(b"\x08\x08")
+        r = rd(c, 2.0)
+        assert bytes([IAC, WILL, 1]) in r, f"no telnet negotiation after the gate ate the client's opening: {r[-80:]!r}"
+        assert bytes([IAC, DO, 0]) in r, f"BINARY refused before the first AT: {r!r}"
+        assert bytes([IAC, DONT, 0]) not in r and bytes([IAC, WONT, 0]) not in r, r
+        got = strip232(rd(v, 4.0, until=b"CONNECT"))
+        assert b"CONNECT" in got, got
+        c.sendall(bytes([IAC, DO, 0]))                   # accept their WILL BINARY
+        rd(c, 0.5); rd(v, 0.5)
+        # IAC IAC split across two segments is one 0xFF
+        c.sendall(b"abc\xff"); time.sleep(0.3); c.sendall(b"\xffdef")
+        got = strip232(rd(v, 1.5, until=b"def"))
+        assert got == b"abc\xffdef", f"split IAC IAC gave {got!r}"
+        # a command split after IAC WILL must not leak its option byte (0x18 = CAN)
+        c.sendall(bytes([IAC, WILL])); time.sleep(0.3); c.sendall(b"\x18Z")
+        got = strip232(rd(v, 1.5, until=b"Z"))
+        assert got == b"Z", f"split option leaked into the data: {got!r}"
+        # C64 -> caller: 8 bits, 0xFF doubled on the wire
+        v.sendall(b"\xc1\xc2\xff\xff")                   # ip232 doubles 0xFF itself
+        got = rd(c, 1.5)
+        assert b"\xc1\xc2\xff\xff" in got, f"caller got {got!r}"
+        # the same DO twice must not be answered twice (no negotiation loop)
+        rd(c, 0.3)
+        c.sendall(bytes([IAC, DO, 1, IAC, DO, 1]))
+        assert rd(c, 0.8) == b"", "repeated DO ECHO was answered again"
+        c.close()
+        strip232(rd(v, 3.0, until=b"NO CARRIER"))
+        time.sleep(5.5)                                  # per-IP rate limit
+        # a raw (non-telnet) caller: 0xFF in mid-session is data
+        c = srv.caller(); rd(c, 0.8)
+        c.sendall(b"\x08\x08"); rd(c, 1.5)
+        got = strip232(rd(v, 4.0, until=b"CONNECT"))
+        assert b"CONNECT" in got, got
+        c.sendall(b"plain"); time.sleep(0.3); c.sendall(b"\xffA\xff\xfbB")
+        got = strip232(rd(v, 1.5, until=b"B"))
+        assert got.endswith(b"plain\xffA\xff\xfbB"), f"raw caller lost bytes: {got!r}"
+        c.close()
+        assert srv.alive()
+    finally:
+        srv.stop()
+
+
+@test("line stays responsive: AT during a caller's gate, caller leaving during RING, one result per command")
+def t_responsive():
+    srv = Server("-x")
+    try:
+        v = srv.vice()
+        v.sendall(b"ATE0\r"); rd(v, 1.0, until=b"OK")
+        c = srv.caller()                                  # sits in the gate
+        time.sleep(0.5)
+        t0 = time.time()
+        v.sendall(b"ATI0\r")
+        r = strip232(rd(v, 3.0, until=b"OK"))
+        assert b"TCPSER" in r and time.time() - t0 < 2.0, f"C64 was blocked by a caller in the gate: {r!r} after {time.time()-t0:.1f}s"
+        # BBS hangs up its idle modem while a caller is in the gate: caller stays
+        v.sendall(b"ATH0\r")
+        r = strip232(rd(v, 1.5, until=b"OK") + rd(v, 0.5))
+        assert r.count(b"OK") == 1 and b"NO CARRIER" not in r, f"idle ATH0 got {r!r}"
+        c.sendall(b"\x08\x08")
+        r = strip232(rd(v, 3.0, until=b"RING"))
+        assert b"RING" in r, f"caller in the gate was dropped by ATH0: {r!r}"
+        c.close()                                         # gives up while it rings
+        time.sleep(2.5); rd(v, 0.2)
+        r = strip232(rd(v, 5.0))
+        assert b"RING" not in r and b"OK" not in r and b"NO CARRIER" not in r, f"after the caller left during RING: {r!r}"
+        # ATL0 is valid; A/ repeats once
+        v.sendall(b"ATM0L0\r")
+        assert b"OK" in strip232(rd(v, 1.5, until=b"OK"))
+        v.sendall(b"ATI0\r"); rd(v, 1.5, until=b"OK")
+        v.sendall(b"A/")
+        r = strip232(rd(v, 1.5, until=b"OK"))
+        assert r.count(b"TCPSER") == 1, r
+        v.sendall(b"/")
+        r = strip232(rd(v, 1.0))
+        assert b"TCPSER" not in r, f"a second '/' repeated the command again: {r!r}"
+        assert srv.alive()
+    finally:
+        srv.stop()
+
+
+@test("stalled caller: a peer that stops reading is hung up and the line is free again")
+def t_stall():
+    srv = Server("-i", "S0=1")
+    try:
+        v = srv.vice()
+        c = srv.caller()
+        c.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)
+        got = strip232(rd(v, 4.0, until=b"CONNECT"))
+        assert b"CONNECT" in got, got
+        # the caller never reads again; the BBS keeps talking
+        v.setblocking(False)
+        chunk = b"X" * 65536
+        end = time.time() + 45
+        dropped = False
+        buf = b""
+        while time.time() < end and not dropped:
+            try:
+                v.send(chunk)
+            except (BlockingIOError, OSError):
+                pass
+            try:
+                d = v.recv(4096)
+                buf += d
+                if b"NO CARRIER" in strip232(buf):
+                    dropped = True
+            except (BlockingIOError, OSError):
+                time.sleep(0.2)
+        assert dropped, "caller that stopped reading was never hung up (line wedged)"
+        assert b"not reading" in srv.logtext(), "no log line about the stalled caller"
+        v.setblocking(True)
+        c.close()
+        time.sleep(5.5)
+        rd(v, 1.0)
+        c2 = srv.caller()
+        got = strip232(rd(v, 6.0, until=b"CONNECT"))
+        assert b"CONNECT" in got, f"line not usable after the stall: {got!r}"
+        c2.close()
+        assert srv.alive()
+    finally:
+        srv.stop()
+
+
+@test("max session (-m 1): an idle caller is cut at the limit")
+def t_max_session():
+    srv = Server("-m", "1", "-i", "S0=1")
+    try:
+        v = srv.vice()
+        c = srv.caller()
+        got = strip232(rd(v, 4.0, until=b"CONNECT"))
+        assert b"CONNECT" in got, got
+        t0 = time.time()
+        r = strip232(rd(v, 75.0, until=b"NO CARRIER"))
+        took = time.time() - t0
+        assert b"NO CARRIER" in r and 50 < took < 70, f"-m 1: {r!r} after {took:.0f}s"
+        assert rd(c, 2.0) == b"" or True
+        c.close()
+    finally:
+        srv.stop()
+
+
+@test("web console: Host header guard (DNS rebinding), --web-host, token never logged, timed blocks exist and clear")
+def t_web_guard():
+    wport = free_port()
+    srv = Server("-x", "-H", str(wport))
+    def http(port, req):
+        s = socket.create_connection(("127.0.0.1", port))
+        s.sendall(req); r = rd(s, 2.0); s.close(); return r
+    try:
+        assert wait_port(wport)
+        r = http(wport, b"GET /api/status HTTP/1.1\r\nHost: evil.example:%d\r\n\r\n" % wport)
+        assert r.startswith(b"HTTP/1.1 403"), f"foreign Host name was served: {r[:80]!r}"
+        for host in (b"127.0.0.1:%d" % wport, b"localhost:%d" % wport, b"localhost"):
+            r = http(wport, b"GET /api/status HTTP/1.1\r\nHost: " + host + b"\r\n\r\n")
+            assert r.startswith(b"HTTP/1.1 200"), (host, r[:80])
+        # connection flood: FLOOD_HITS rate-limited connects earn a timed block
+        # (the first one fails the gate; the rest arrive inside the rate limit)
+        for _ in range(9):
+            c = srv.caller(); c.close(); time.sleep(0.2)
+        time.sleep(0.5)
+        r = http(wport, b"GET /api/status HTTP/1.1\r\nHost: localhost\r\n\r\n")
+        assert b'"kind":"timed"' in r.replace(b" ", b""), f"no timed block after a flood: {r[r.find(b'blocklist'):][:200]!r}"
+        r = http(wport, b"POST /api/unblock HTTP/1.1\r\nHost: localhost\r\nX-Requested-With: tcpser\r\n\r\n")
+        assert r.startswith(b"HTTP/1.1 200"), r[:80]
+        r = http(wport, b"GET /api/status HTTP/1.1\r\nHost: localhost\r\n\r\n")
+        assert b'"kind":"timed"' not in r.replace(b" ", b""), "timed block not cleared"
+    finally:
+        srv.stop()
+    wport = free_port()
+    srv = Server("-H", str(wport), "--web-host", "bbs.example")
+    try:
+        assert wait_port(wport)
+        r = http(wport, b"GET /api/status HTTP/1.1\r\nHost: bbs.example\r\n\r\n")
+        assert r.startswith(b"HTTP/1.1 200"), r[:80]
+    finally:
+        srv.stop()
+    wport = free_port()
+    srv = Server("-H", str(wport), env={"TCPSER_DASH_TOKEN": "S3cretTok"})
+    try:
+        assert wait_port(wport)
+        r = http(wport, b"GET /?token=S3cretTok HTTP/1.1\r\nHost: bbs.example\r\n\r\n")
+        assert r.startswith(b"HTTP/1.1 302"), r[:80]
+        http(wport, b"GET /../x?token=S3cretTok HTTP/1.1\r\nHost: x\r\n\r\n")
+        time.sleep(0.3)
+        assert b"S3cretTok" not in srv.logtext(), "the web token was written to the log"
+    finally:
+        srv.stop()
+
+
+@test("ip232: DCD state is sent to an emulator when it attaches")
+def t_ip232_attach():
+    srv = Server("-i", "&C0")
+    try:
+        v = srv.vice()
+        r = rd(v, 1.5)
+        assert b"\xff\x01" in r, f"no DCD-on code after attach with &C0: {r!r}"
+        v.close(); time.sleep(0.5)
+        v = srv.vice()
+        r = rd(v, 1.5)
+        assert b"\xff\x01" in r, f"no DCD-on code after re-attach: {r!r}"
+    finally:
+        srv.stop()
+
 
 
 if __name__ == "__main__":

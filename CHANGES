@@ -304,4 +304,70 @@
             last 30 minutes of traffic so the chart stays on the grid.
   TEST:     password-gate test spaces attempts beyond the 5 s per-IP rate limit
             (it was flaky); make check now fails the build on a failing suite.
-
+1.4.2 (review 2026-11-15 — see docs/REVIEW-2026-11-15.md; no memory-safety/RCE bugs were found)
+  MODEM:    a failed ATD left the modem off-hook in data mode: every caller got
+            BUSY until the C64 sent a byte, and that next command was swallowed.
+            Dialling now runs in its own thread: the line keeps serving the C64,
+            S7 bounds the wait, a keypress aborts, commas pause without blocking,
+            and the modem returns on-hook in command mode. X3+ report BUSY
+            (refused) and NO ANSWER (timeout). ATD while an incoming call is
+            ringing answers BUSY instead of overwriting (leaking) the caller's
+            socket. Phone-book lookup uses the number as typed; punctuation is
+            only stripped from numeric "phone numbers", so host names with a
+            hyphen can be dialled. ATDlocalhost is a host, not "redial"
+  MODEM:    one result code per event: ATH/ATZ from online command mode answer
+            a single OK, idle ATH no longer answers OK twice, and a late
+            "peer closed" notification no longer adds a stray OK after
+            NO CARRIER or touches the line's next call. ATL0 accepted, A/
+            repeats once, &D1 answers OK, &D3 accepted
+  LINE:     banner, gate and baud menu run in a per-call thread: a caller (or
+            bot) sitting in the gate no longer delays the C64's AT commands,
+            DTR, SIGTERM or a dashboard hangup. A BBS that sends ATH while a
+            caller is in the gate no longer drops that caller
+  LINE:     a caller that stops reading is hung up after 20 s instead of
+            blocking the line (send timeout on caller sockets); -m is enforced
+            on idle callers (the session limit has its own timer); a DTR drop
+            inside the 5 s post-connect grace is re-checked when the grace
+            ends; a caller who leaves during RING or in +++ command mode is
+            noticed within a second; the answer wait covers S0 rings and is
+            settable (--answer-timeout); S30 no longer produces unsolicited OK
+            on an idle line; flow control is re-applied after a USB re-plug
+  TELNET:   parser rewritten as a state machine with its state kept across
+            reads: an IAC sequence split over two TCP segments no longer drops
+            or leaks bytes (0xFF and 0x18 in binary uploads). The gate feeds the
+            same parser, so a telnet client's opening negotiation is answered
+            instead of discarded (the call used to stay in raw mode). BINARY is
+            no longer refused before the C64's first AT (parity "unknown" was
+            treated as parity). RFC 1143 option state (a repeated DO/WILL is
+            not answered again), role-aware opening (ECHO/NAWS/TTYPE only to
+            callers), CR NUL, IAC IAC without BINARY, caller's terminal type
+            is requested and logged
+  IP232:    DCD state is sent when an emulator attaches; an emulator that
+            vanishes during a call hangs the caller up
+  SECURITY: web console refuses requests whose Host header is a foreign name
+            when no token is set (DNS rebinding could read caller data from a
+            loopback-only console); --web-host / TCPSER_DASH_HOST lists allowed
+            names. The token is never written to the log. Connection log and
+            stats file are created 0600 (no chmod-after window); stats are
+            written via rename. Sockets, serial port, pipes and logs are
+            close-on-exec (webhook curl and -E hooks no longer inherit them).
+            Per-address limit on web handlers for non-loopback clients
+  BLOCKS:   timed blocks now exist: five rate-limited connects in a row earn a
+            10-minute block, shown on both dashboards, cleared by U / F9 / POST
+            /api/unblock (those actions used to have nothing to clear). The IP
+            table grows on demand (was a fixed 512: further blocklist-file
+            lines were ignored silently); a new ban no longer re-reads the file
+  TIMERS:   all timeouts use the monotonic clock: an NTP step (Pi without an
+            RTC) no longer expires or stretches gate, answer, session, rate
+            limit and watchdog timers
+  FIXES:    DISCONNECTED/CONNECTED webhooks carry the peer (was empty); -c / -a
+            screens go to the C64 (were sent to the caller); connection log
+            carries byte counts; TUI H and R act on a selectable line (digit
+            keys) and R asks first; control lines polled every 25 ms; pipe
+            messages are handled one by one; listeners are non-blocking;
+            TCP_NODELAY and keepalive on every call; web threads block operator
+            signals; serial port settings are restored at exit
+  BUILD:    CC defaults to cc (override with CC=), sanitizer builds use
+            SAN_CC; make install keeps an existing tcpser.conf / blocklist
+  TEST:     seven new tests (outgoing calls, telnet, responsiveness, stalled
+            caller, -m, web guard + timed blocks, ip232 attach): 16 in total

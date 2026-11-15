@@ -139,7 +139,7 @@ int dce_check_control_lines(dce_config *cfg) {
   state = dce_get_control_lines(cfg);
   new_state = state;
   while(new_state > -1 && state == new_state) {
-    usleep(100000);
+    usleep(25000);   /* 25 ms: a BBS may pulse DTR for well under 100 ms to hang up */
     new_state = dce_get_control_lines(cfg);
   }
 
@@ -231,10 +231,13 @@ void dce_detect_parity(dce_config *cfg, unsigned char a, unsigned char t) {
 }
 
 int dce_strip_parity(dce_config *cfg, unsigned char data) {
-  return (cfg->parity ? data & 0x7f : data);
+  return (cfg->parity > 0 ? data & 0x7f : data);
 }
 
+/* 0 = 8-bit clean (none, or not yet detected); >0 = the C64 side uses parity.
+ * "Not yet detected" (-1) used to count as parity, so until the C64 typed its
+ * first AT every telnet caller was refused BINARY and lost bit 7. */
 int dce_get_parity(dce_config *cfg) {
-  return cfg->parity;
+  return cfg->parity > 0 ? cfg->parity : 0;
 }
 

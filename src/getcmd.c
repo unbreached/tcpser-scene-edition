@@ -254,9 +254,19 @@ int getcmd(char line[],
           switch(toupper((unsigned char)line[*index])) {
             case 0:
                 return cmd;
+            case 'L': {
+              /* ATDL = redial, only when nothing follows. "ATDlocalhost:6400"
+               * is a host name that happens to start with L. */
+              int k = *index + 1;
+              while(k < len && line[k] == ' ') k++;
+              if(k < len && line[k] != 0) {
+                getData(line, index, len, data_start, data_end, TRUE);
+                return cmd;
+              }
+            }
+              /* fall through */
             case 'T':
             case 'P':
-            case 'L':
               *num = toupper((unsigned char)line[*index]);
               (*index)++;
               /* fall through */

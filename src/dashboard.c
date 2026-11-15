@@ -20,6 +20,7 @@
 #include <sys/ioctl.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <fcntl.h>
 
 #include "dashboard.h"
 #include "tui.h"
@@ -143,6 +144,10 @@ static void put_right(int row, int col, int color, const char *s, int width) {
   char buf[256]; snprintf(buf, sizeof(buf), "%*.*s", width, width, s); tui_putn(row, col, color, buf, width);
 }
 
+static int g_sel_line = -1;      /* line picked with a digit key; -1 = follow the caller */
+static int g_confirm_line = -1;  /* line a pending Y/N question is about */
+static int target_line(void);
+
 /* ---- pages ---------------------------------------------------------------- */
 static void draw_lines_box(int top, int *next) {
   int n = 0;
@@ -158,10 +163,12 @@ static void draw_lines_box(int top, int *next) {
   tui_put(top + 1, X + C_ST, TC_DIM, "STATE"); tui_put(top + 1, X + C_CALL, TC_DIM, "CALLER"); put_right(top + 1, X + C_DUR, TC_DIM, "DUR", 5);
   put_right(top + 1, X + C_IN, TC_DIM, "IN", 6); put_right(top + 1, X + C_OUT, TC_DIM, "OUT", 7); tui_put(top + 1, X + C_DCD, TC_DIM, "DCD"); tui_put(top + 1, X + C_DTR, TC_DIM, "DTR");
   int r = top + 2, shown = 0;
+  int target = n > 1 ? target_line() : -1;   /* marker only when there is a choice */
   char b1[32], line[64];
   for(int i = 0; i < DASH_MAX_LINES; i++) {
     dash_line_t *l = &g_dash.lines[i];
     if(!l->inited) continue;
+    tui_put(r, 1, TC_ACCENT, i == target ? ">" : " ");
     snprintf(line, sizeof(line), "%2d", i); tui_put(r, X + C_LN, TC_VALUE, line);
     put_padded(r, X + C_DEV, TC_VALUE, l->device, 14);
     snprintf(line, sizeof(line), "%5d", l->speed); tui_put(r, X + C_SPD, TC_VALUE, line);
@@ -274,8 +281,9 @@ static void draw_blocklist_page(int top, int h) {
 static void draw_help_page(int top, int h) {
   tui_box(top, 0, h, W, "HELP");
   static const char *lines[] = {
-    "H  HANG UP THE CURRENT CALLER (ASKS Y/N)",
-    "R  RESET THE MODEM EMULATION (ATZ)",
+    "H  HANG UP THE CALLER ON THE MARKED LINE (ASKS Y/N)",
+    "R  RESET THE MARKED LINE'S MODEM, LIKE ATZ (ASKS Y/N)",
+    "0-7  MARK A LINE FOR H AND R (MULTI-LINE; DEFAULT: THE CALLER)",
     "B  BLOCKLIST PAGE        U  CLEAR TIMED BLOCKS (ASKS Y/N)",
     "P  PHOSPHOR GREEN / AMBER / WHITE",
     "S  BACK TO THE MAIN SCREEN / REPAINT",
@@ -374,17 +382,23 @@ static void render_throttled(void) {
   if(ms >= 100 || ms < 0) render();
 }
 
-/* Keyboard — send commands through pipe protocol (thread-safe) */
-static void do_hangup(void) {
-  modem_config *cfg = (modem_config *)g_dash.modem_cfg;
-  if(!cfg) return;
-  writePipe(cfg->mp[1][1], MSG_HANGUP);
+/* Keyboard — send commands through pipe protocol (thread-safe).
+ * H and R act on ONE line: the one picked with the digit keys, or, until the
+ * operator picks, the first line with a caller (else the first line). They
+ * used to act on whichever line had registered last, so on a multi-line BBS
+ * "hang up" could hit an idle line and "reset" could drop the wrong caller. */
+static int target_line(void) {
+  if(g_sel_line >= 0 && g_sel_line < DASH_MAX_LINES && g_dash.lines[g_sel_line].inited) return g_sel_line;
+  for(int i = 0; i < DASH_MAX_LINES; i++) if(g_dash.lines[i].inited && g_dash.lines[i].connected) return i;
+  for(int i = 0; i < DASH_MAX_LINES; i++) if(g_dash.lines[i].inited) return i;
+  return -1;
 }
 
-static void do_reset(void) {
-  modem_config *cfg = (modem_config *)g_dash.modem_cfg;
+static void line_msg(int line, char msg) {
+  if(line < 0 || line >= DASH_MAX_LINES || !g_dash.lines[line].inited) return;
+  modem_config *cfg = (modem_config *)g_dash.lines[line].cfg;
   if(!cfg) return;
-  writePipe(cfg->mp[1][1], MSG_RESET);
+  writePipe(cfg->mp[1][1], msg);
 }
 
 /* Public API */
@@ -711,7 +725,8 @@ void dashboard_check_keyboard(void) {
       g_confirm = 0;
       if(ch == 'y' || ch == 'Y') {
         switch(pending) {
-          case 'h': do_hangup(); set_msg("HANG UP REQUESTED"); break;
+          case 'h': line_msg(g_confirm_line, MSG_HANGUP); set_msg("HANG UP REQUESTED ON LINE %d", g_confirm_line); break;
+          case 'r': line_msg(g_confirm_line, MSG_RESET); set_msg("LINE %d: MODEM RESET SENT (ATZ)", g_confirm_line); break;
           case 'u': { int n = blocklist_unblock_all_timed(); set_msg("CLEARED %d TIMED BLOCK(S)", n); break; }
           case 'q': g_quit_requested = 1; return;
         }
@@ -720,10 +735,26 @@ void dashboard_check_keyboard(void) {
     }
     switch(ch) {
       case 'h': case 'H': {
-        int online = 0; for(int i = 0; i < DASH_MAX_LINES; i++) if(g_dash.lines[i].inited && g_dash.lines[i].connected) online = 1;
-        if(online) ask_confirm('h', "HANG UP THE CURRENT CALLER"); else set_msg("NO CALLER ONLINE");
+        int t = target_line();
+        char q[80];
+        if(t >= 0 && g_dash.lines[t].connected) {
+          snprintf(q, sizeof(q), "HANG UP LINE %d (%s)", t, g_dash.lines[t].peer_ip);
+          g_confirm_line = t; ask_confirm('h', q);
+        } else if(t >= 0 && g_sel_line >= 0) set_msg("NO CALLER ON LINE %d", t);
+        else set_msg("NO CALLER ONLINE");
         break; }
-      case 'r': case 'R': do_reset(); set_msg("MODEM RESET SENT (ATZ)"); break;
+      case 'r': case 'R': {
+        int t = target_line();
+        char q[80];
+        if(t < 0) { set_msg("NO LINES CONFIGURED"); break; }
+        snprintf(q, sizeof(q), "RESET LINE %d%s", t, g_dash.lines[t].connected ? " (DROPS ITS CALLER)" : "");
+        g_confirm_line = t; ask_confirm('r', q);
+        break; }
+      case '0': case '1': case '2': case '3': case '4': case '5': case '6': case '7': {
+        int t = ch - '0';
+        if(g_dash.lines[t].inited) { g_sel_line = (g_sel_line == t) ? -1 : t; if(g_sel_line >= 0) set_msg("LINE %d MARKED FOR H AND R", t); else set_msg("MARK CLEARED: H AND R FOLLOW THE CALLER"); }
+        else set_msg("NO LINE %d", t);
+        break; }
       case 'b': case 'B': g_page = (g_page == PG_BLOCKS) ? PG_MAIN : PG_BLOCKS; tui_invalidate(); break;
       case '?': case '/': g_page = (g_page == PG_HELP) ? PG_MAIN : PG_HELP; tui_invalidate(); break;
       case 's': case 'S': case 27: g_page = PG_MAIN; g_msg[0] = 0; tui_invalidate(); break;
@@ -749,12 +780,17 @@ void dashboard_save_stats(const char *path) {
   int i, idx;
   FILE *f;
   if(!path || !path[0]) return;
-  f = fopen(path, "w");
-  if(!f) return;
+  /* Written to a temporary file and renamed into place, so a crash or power
+   * cut mid-save cannot leave a truncated stats file. The persisted history
+   * includes caller IP addresses (PII): created owner-only from the start. */
+  char tmp[600];
+  snprintf(tmp, sizeof(tmp), "%s.tmp", path);
+  int sfd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR);
+  if(sfd < 0) return;
+  (void)fchmod(sfd, S_IRUSR | S_IWUSR);
+  f = fdopen(sfd, "w");
+  if(!f) { close(sfd); return; }
   pthread_mutex_lock(&dash_mutex);
-  /* The persisted history includes caller IP addresses (PII), so keep the
-   * stats file owner-only regardless of umask. */
-  (void)chmod(path, S_IRUSR | S_IWUSR);
   fprintf(f, "# TCPSER statistics (auto-saved)\n");
   fprintf(f, "connections=%lu\n", g_dash.total_connections);
   fprintf(f, "blocked=%lu\n", g_dash.blocked);
@@ -778,7 +814,18 @@ void dashboard_save_stats(const char *path) {
     }
   }
   pthread_mutex_unlock(&dash_mutex);
-  fclose(f);
+  if(fclose(f) == 0) (void)rename(tmp, path);
+  else (void)unlink(tmp);
+}
+
+/* Byte counters of the call currently on a line (for the connection log). */
+void dashboard_line_bytes(int idx, long *in, long *out) {
+  *in = *out = 0;
+  if(idx < 0 || idx >= DASH_MAX_LINES) return;
+  pthread_mutex_lock(&dash_mutex);
+  *in = (long)g_dash.lines[idx].bytes_in;
+  *out = (long)g_dash.lines[idx].bytes_out;
+  pthread_mutex_unlock(&dash_mutex);
 }
 
 void dashboard_load_stats(const char *path) {

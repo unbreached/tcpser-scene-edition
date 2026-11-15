@@ -6,6 +6,7 @@
 #include <unistd.h>
 #define DEBUG_VARS 1      // need this so we don't get extern defs
 #include "debug.h"
+#include "util.h"
 #include "dashboard.h"
 
 int log_level = 0;
@@ -92,6 +93,7 @@ int log_get_level(void) { return log_level; }
 void log_reopen(void) {
   if(log_filename[0]) {
     FILE *f = fopen(log_filename, "a");
+    if(f) set_cloexec(fileno(f));
     if(f) {
       /* Swap under the log mutex: other threads may be mid-LOG() on the old
        * FILE*, and fclose() of a stream in use is a use-after-free. */
