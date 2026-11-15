@@ -192,6 +192,12 @@ void tui_box_c(int top, int left, int h, int w, const char *title, int title_col
   if(title && *title) {
     char t[80]; snprintf(t, sizeof(t), " %s ", title);
     tui_putn(top, left + 2, title_color, t, w - 4);
+    /* ANSI-art fade from the title chip into the frame line */
+    if(g_utf8 && g_tier && (int)strlen(t) + 6 < w) {
+      static const int base[] = { TC_ACCENT, TC_ACCENT2, TC_WARN, TC_BAD, TC_INFO };
+      int fg = (title_color >= TC_COUNT && phos_idx() == 0) ? base[title_color - TC_COUNT] : TC_TITLE;
+      tui_putn(top, left + 2 + (int)strlen(t), fg, "\xe2\x96\x93\xe2\x96\x92\xe2\x96\x91", 3);
+    }
   }
 }
 

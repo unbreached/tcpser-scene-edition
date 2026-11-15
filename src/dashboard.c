@@ -267,8 +267,8 @@ static void flow_arrows(int row, int col, int n, int dir, int active, int carrie
   for(int x = 0; x < n; x++) {
     if(active) {
       int lit = dir > 0 ? ((x - phase) % 4 + 4) % 4 == 0 : (x + phase) % 4 == 0;
-      tui_putn(row, col + x, lit ? TC_VALUE : (dir > 0 ? TC_ACCENT : TC_ACCENT2), dir > 0 ? U("\xe2\x80\xba", ">") : U("\xe2\x80\xb9", "<"), 1);
-    } else tui_putn(row, col + x, carrier ? TC_DIM : TC_FRAME, carrier ? tui_glyph(G_HL) : U("\xc2\xb7", "."), 1);
+      tui_putn(row, col + x, lit ? TC_VALUE : (dir > 0 ? TC_ACCENT : TC_ACCENT2), dir > 0 ? U("\xc2\xbb", ">") : U("\xc2\xab", "<"), 1);
+    } else tui_putn(row, col + x, carrier ? TC_DIM : TC_FRAME, carrier ? U("\xe2\x95\x90", "=") : U("\xc2\xb7", "."), 1);
   }
 }
 static void draw_flow(int top, int h) {
@@ -293,7 +293,7 @@ static void draw_flow(int top, int h) {
      * names, arrows back to the caller beside the second row. */
     for(int i = 0; i < NFLOW; i++) {
       int x = x0 + i * (nw + gw), f = n[i].frame;
-      put_center(top + 1, x, nw, f == TC_FRAME ? TC_HEAD : f, n[i].title);
+      { char nm[24]; snprintf(nm, sizeof(nm), "[%s]", n[i].title); put_center(top + 1, x, nw, f == TC_FRAME ? TC_HEAD : f, nm); }
       put_center(top + 2, x, nw, TC_VALUE, n[i].detail);
       put_mid(top + 3, x + nw / 2, n[i].scolor, n[i].status);
       if(i < NFLOW - 1 && gw >= 3) {
@@ -305,7 +305,7 @@ static void draw_flow(int top, int h) {
   } else {
     for(int i = 0; i < NFLOW; i++) {
       int x = x0 + i * (nw + gw), f = n[i].frame;
-      put_center(top + 1, x, nw, f == TC_FRAME ? TC_HEAD : f, n[i].title);
+      { char nm[24]; snprintf(nm, sizeof(nm), "[%s]", n[i].title); put_center(top + 1, x, nw, f == TC_FRAME ? TC_HEAD : f, nm); }
       if(h >= 4) put_mid(top + 2, x + nw / 2, n[i].scolor, i == 4 ? n[i].detail : n[i].status);
       if(i < NFLOW - 1) {
         int before_gate = i < 2;
@@ -461,6 +461,184 @@ static void draw_graphs_page(int top, int h) {
   else draw_calls24(top + 2 * a, 0, c, W);
 }
 
+/* ---- session banner ---------------------------------------------------------
+ * The one thing the operator must see from across the room: is somebody on
+ * the BBS right now. Big block letters (a 5x5 font drawn with half blocks,
+ * three text rows), the caller underneath, a scanner while the line waits. */
+typedef struct { char ch; const char *rows[5]; } big_glyph_t;
+static const big_glyph_t BIG[] = {
+  { 'A', { " ### ", "#   #", "#####", "#   #", "#   #" } },
+  { 'B', { "#### ", "#   #", "#### ", "#   #", "#### " } },
+  { 'D', { "#### ", "#   #", "#   #", "#   #", "#### " } },
+  { 'E', { "#####", "#    ", "#### ", "#    ", "#####" } },
+  { 'I', { "###", " # ", " # ", " # ", "###" } },
+  { 'L', { "#    ", "#    ", "#    ", "#    ", "#####" } },
+  { 'N', { "#   #", "##  #", "# # #", "#  ##", "#   #" } },
+  { 'O', { " ### ", "#   #", "#   #", "#   #", " ### " } },
+  { 'S', { " ####", "#    ", " ### ", "    #", "#### " } },
+  { 'T', { "#####", "  #  ", "  #  ", "  #  ", "  #  " } },
+  { 'Y', { "#   #", " # # ", "  #  ", "  #  ", "  #  " } },
+};
+static const big_glyph_t *big_find(char c) {
+  for(unsigned i = 0; i < sizeof(BIG) / sizeof(BIG[0]); i++) if(BIG[i].ch == c) return &BIG[i];
+  return NULL;
+}
+static int big_width(const char *s) {
+  int w = 0;
+  for(; *s; s++) { const big_glyph_t *g = big_find(*s); w += (g ? (int)strlen(g->rows[0]) : 3) + 1; }
+  return w > 0 ? w - 1 : 0;
+}
+static void big_text(int top, int left, int color, const char *s) {
+  int x = left;
+  for(; *s; s++) {
+    const big_glyph_t *g = big_find(*s);
+    if(!g) { x += 4; continue; }
+    int gw = (int)strlen(g->rows[0]);
+    for(int r = 0; r < 3; r++) for(int c = 0; c < gw; c++) {
+      int up = g->rows[r * 2][c] == '#', dn = r * 2 + 1 < 5 && g->rows[r * 2 + 1][c] == '#';
+      const char *cell = up && dn ? U("\xe2\x96\x88", "#") : up ? U("\xe2\x96\x80", "\"") : dn ? U("\xe2\x96\x84", "_") : NULL;
+      if(cell) tui_putn(top + r, x + c, color, cell, 1);
+    }
+    x += gw + 1;
+  }
+}
+/* a light sweeping back and forth: the line is listening */
+static void scanner(int row, int col, int n, int phase, int mirror) {
+  static const char *shade[4] = { "\xe2\x96\x88", "\xe2\x96\x93", "\xe2\x96\x92", "\xe2\x96\x91" };
+  static const char *ashade[4] = { "#", "=", "-", "." };
+  int span = 2 * (n - 1), p = span > 0 ? phase % span : 0;
+  if(p >= n) p = span - p;
+  if(mirror) p = n - 1 - p;
+  for(int i = 0; i < n; i++) {
+    int d = i > p ? i - p : p - i;
+    if(d < 4) tui_putn(row, col + i, d == 0 ? TC_VALUE : TC_INFO, tui_is_utf8() ? shade[d] : ashade[d], 1);
+    else tui_putn(row, col + i, TC_FRAME, U("\xc2\xb7", "."), 1);
+  }
+}
+static void draw_session(int top, int left, int h, int w) {
+  int total = 0, on = lines_online(&total);
+  int phase = anim_phase();
+  tui_box_c(top, left, h, w, on ? "SESSION" : "SESSION", on ? TC_REV_ACCENT : TC_REV_INFO);
+  const char *word = on ? "ONLINE" : "STANDBY";
+  int bw = big_width(word), inner = w - 4;
+  int brow = top + 1 + (h - 2 - 4) / 2;                 /* banner (3 rows) + info row, centred */
+  if(bw <= inner) big_text(brow, left + 2 + (inner - bw) / 2, on ? TC_ACCENT : TC_INFO, word);
+  else put_center(brow + 1, left + 2, inner, on ? TC_REV_ACCENT : TC_INFO, word);
+  char info[160], b1[32], b2[32], b3[32];
+  int irow = brow + 3;
+  if(on) {
+    dash_line_t *l = NULL; int ln = -1;
+    int t = target_line();
+    if(t >= 0 && g_dash.lines[t].connected) { l = &g_dash.lines[t]; ln = t; }
+    for(int i = 0; i < DASH_MAX_LINES && !l; i++) if(g_dash.lines[i].inited && g_dash.lines[i].connected) { l = &g_dash.lines[i]; ln = i; }
+    if(l) {
+      snprintf(info, sizeof(info), "%s   %s   RX %s  TX %s", l->peer_ip, fmt_dur((int)(time(NULL) - l->session_start), b1, sizeof(b1)),
+               fmt_bytes(l->bytes_in, b2, sizeof(b2)), fmt_bytes(l->bytes_out, b3, sizeof(b3)));
+      put_center(irow, left + 2, inner, allowlist_has(l->peer_ip) ? TC_OK : TC_VALUE, info);
+      snprintf(info, sizeof(info), on > 1 ? " LINE %d  +%d MORE " : " LINE %d ", ln, on - 1);
+      tui_put(top, left + w - 3 - (int)strlen(info), TC_ACCENT, info);
+    }
+    /* the carrier lamp: blinks, like the CD light it stands for */
+    int lc = left + (w - 18) / 2;
+    tui_put(top + h - 1, lc, TC_ACCENT, " ");
+    tui_put(top + h - 1, lc + 1, (phase & 2) ? TC_ACCENT : TC_DIM, tui_glyph(G_DOT_ON));
+    tui_put(top + h - 1, lc + 2, TC_ACCENT, " CARRIER DETECT ");
+  } else {
+    /* who was here last, and how long ago */
+    const dash_history_entry_t *last = NULL;
+    int cnt = g_dash.history_count < DASH_HISTORY_LINES ? g_dash.history_count : DASH_HISTORY_LINES;
+    for(int r = 0; r < cnt && !last; r++) {
+      const dash_history_entry_t *e = &g_dash.history[(g_dash.history_head - 1 - r + DASH_HISTORY_LINES) % DASH_HISTORY_LINES];
+      if(e->result >= 2) last = e;
+    }
+    if(last) {
+      long ago = (long)(time(NULL) - last->connect_time) - last->duration; if(ago < 0) ago = 0;
+      if(ago < 3600) snprintf(b1, sizeof(b1), "%ld MIN AGO", ago / 60); else if(ago < 86400) snprintf(b1, sizeof(b1), "%ld H AGO", ago / 3600); else snprintf(b1, sizeof(b1), "%ld D AGO", ago / 86400);
+      snprintf(info, sizeof(info), "WAITING FOR A CALL   LAST %s  %s", last->ip, b1);
+    } else snprintf(info, sizeof(info), "WAITING FOR A CALL");
+    int len = cells_of(info), sw = (inner - len - 4) / 2; if(sw > 12) sw = 12;
+    int c0 = left + 2 + (inner - len) / 2;
+    put_center(irow, left + 2, inner, TC_DIM, info);
+    if(sw >= 4) { scanner(irow, c0 - 2 - sw, sw, phase, 0); scanner(irow, c0 + len + 2, sw, phase, 1); }
+    int lc = left + (w - 14) / 2;
+    tui_put(top + h - 1, lc, TC_DIM, " ");
+    tui_put(top + h - 1, lc + 1, TC_DIM, tui_glyph(G_DOT_OFF));
+    tui_put(top + h - 1, lc + 2, TC_DIM, " NO CARRIER ");
+  }
+}
+
+/* ---- modem front panel -------------------------------------------------------
+ * The eight lights of a Hayes modem for every line, read left to right as on
+ * the real thing: MR modem ready, TR terminal ready (DTR from the BBS),
+ * SD / RD send / receive data (they flicker with the traffic), OH off hook,
+ * CD carrier detect, AA auto answer (S0 > 0), HS high speed. */
+#define NLED 8
+static const char *LED_NAME[NLED] = { "MR", "TR", "SD", "RD", "OH", "CD", "AA", "HS" };
+static void line_leds(const dash_line_t *l, int phase, int *on, int *color) {
+  time_t now = time(NULL);
+  const modem_config *c = (const modem_config *)l->cfg;
+  int tx = l->connected && now - g_dash.last_caller_tx <= 1, rx = l->connected && now - g_dash.last_caller_rx <= 1;
+  on[0] = 1;                         color[0] = TC_OK;
+  on[1] = l->dtr;                    color[1] = TC_OK;
+  on[2] = tx && (phase & 1);         color[2] = TC_ACCENT2;
+  on[3] = rx && !(phase & 1);        color[3] = TC_ACCENT;
+  on[4] = l->connected;              color[4] = TC_WARN;
+  on[5] = l->connected;              color[5] = TC_ACCENT;
+  on[6] = c && c->s[0] > 0;          color[6] = TC_WARN;
+  on[7] = l->speed >= 2400;          color[7] = TC_OK;
+}
+static void put_leds(int row, int col, const dash_line_t *l, int phase) {
+  int on[NLED], color[NLED]; line_leds(l, phase, on, color);
+  for(int i = 0; i < NLED; i++) tui_put(row, col + i * 3, on[i] ? color[i] : TC_FRAME, tui_glyph(on[i] ? G_DOT_ON : G_DOT_OFF));
+}
+static const char *short_dev(const char *d) { return strncmp(d, "/dev/", 5) == 0 ? d + 5 : d; }
+static void draw_lines_panel(int top, int left, int h, int w) {
+  int right = left + w - 1, phase = anim_phase();
+  int total = 0, online = lines_online(&total);
+  tui_box_c(top, left, h, w, "LINES", TC_REV_ACCENT);
+  { char t[32]; snprintf(t, sizeof(t), " %d/%d ONLINE ", online, total); tui_put(top, right - 2 - (int)strlen(t), online ? TC_ACCENT : TC_DIM, t); }
+  int led_col = right - 1 - NLED * 3;                   /* lights right aligned */
+  int x = left + 2, room = led_col - x - 2;              /* cells for the text columns */
+  /* the caller always fits; duration, baud and state give way first on a
+   * narrow panel (the lights and the session banner say the same) */
+  int show_dur = room >= 3 + 8 + 6 + 9 + 17 + 6, show_baud = room >= 3 + 8 + 6 + 9 + 17, show_state = room >= 3 + 8 + 9 + 17;
+  int devw = room - 3 - 17 - (show_dur ? 6 : 0) - (show_baud ? 6 : 0) - (show_state ? 9 : 0);
+  if(devw > 16) devw = 16;
+  if(devw < 4) devw = 4;
+  int c_dev = x + 3, c_spd = c_dev + devw + 1, c_st = c_spd + (show_baud ? 6 : 0), c_call = c_st + (show_state ? 9 : 0), c_dur = c_call + 17;
+  tui_put(top + 1, x, TC_HEAD, "LN"); tui_putn(top + 1, c_dev, TC_HEAD, "DEVICE", devw);
+  if(show_baud) tui_put(top + 1, c_spd, TC_HEAD, " BAUD");
+  if(show_state) tui_put(top + 1, c_st, TC_HEAD, "STATE");
+  put_clip(top + 1, c_call, TC_HEAD, "CALLER", led_col - 1);
+  if(show_dur) tui_put(top + 1, c_dur, TC_HEAD, "  DUR");
+  for(int i = 0; i < NLED; i++) tui_put(top + 1, led_col + i * 3, TC_HEAD, LED_NAME[i]);
+  int r = top + 2, shown = 0, target = total > 1 ? target_line() : -1;
+  char b1[32], line[64];
+  for(int i = 0; i < DASH_MAX_LINES && r < top + h - 1; i++) {
+    dash_line_t *l = &g_dash.lines[i];
+    if(!l->inited) continue;
+    tui_put(r, left + 1, TC_ACCENT, i == target ? ">" : " ");
+    snprintf(line, sizeof(line), "%2d", i); tui_put(r, x, TC_VALUE, line);
+    tui_putn(r, c_dev, TC_VALUE, short_dev(l->device), devw);
+    if(show_baud) { snprintf(line, sizeof(line), "%5d", l->speed); tui_put(r, c_spd, TC_VALUE, line); }
+    if(show_state) tui_put(r, c_st, l->connected ? TC_REV_ACCENT : TC_DIM, l->connected ? " ONLINE " : "IDLE");
+    if(l->connected) {
+      snprintf(line, sizeof(line), "%-16.16s", l->peer_ip);
+      put_clip(r, c_call, allowlist_has(l->peer_ip) ? TC_OK : TC_VALUE, line, led_col - 1);
+      if(show_dur) { snprintf(line, sizeof(line), "%5s", fmt_dur((int)(time(NULL) - l->session_start), b1, sizeof(b1))); tui_put(r, c_dur, TC_VALUE, line); }
+    } else if(!show_state) put_clip(r, c_call, TC_DIM, "IDLE", led_col - 1);
+    put_leds(r, led_col, l, phase);
+    r++; shown++;
+  }
+  if(!shown) tui_put(r, x, TC_DIM, "NO LINES CONFIGURED");
+  /* spare rows: what the lights mean, set into the bottom of the panel */
+  if(r < top + h - 2) {
+    const char *legend = "MR READY  TR DTR  SD SEND  RD RECV  OH OFF HOOK  CD CARRIER  AA AUTO ANSWER  HS HIGH SPEED";
+    if((int)strlen(legend) <= w - 4) put_center(top + h - 2, left + 2, w - 4, TC_DIM, legend);
+    else put_center(top + h - 2, left + 2, w - 4, TC_DIM, "SD SEND  RD RECV  OH OFF HOOK  CD CARRIER  AA AUTO ANSWER");
+  }
+}
+
 /* ---- lines ----------------------------------------------------------------- */
 static void draw_lines_box(int top, int *next) {
   int n = 0;
@@ -475,6 +653,7 @@ static void draw_lines_box(int top, int *next) {
   tui_put(top + 1, X + C_LN, TC_HEAD, "LN"); tui_put(top + 1, X + C_DEV, TC_HEAD, "DEVICE"); tui_put(top + 1, X + C_SPD, TC_HEAD, "SPEED");
   tui_put(top + 1, X + C_ST, TC_HEAD, "STATE"); tui_put(top + 1, X + C_CALL, TC_HEAD, "CALLER"); put_right(top + 1, X + C_DUR, TC_HEAD, "DUR", 5);
   put_right(top + 1, X + C_IN, TC_HEAD, "IN", 6); put_right(top + 1, X + C_OUT, TC_HEAD, "OUT", 7); tui_put(top + 1, X + C_DCD, TC_HEAD, "DCD"); tui_put(top + 1, X + C_DTR, TC_HEAD, "DTR");
+  if(W >= 108) for(int i = 0; i < NLED; i++) tui_put(top + 1, W - 2 - NLED * 3 + i * 3, TC_HEAD, LED_NAME[i]);
   int r = top + 2, shown = 0;
   int target = n > 1 ? target_line() : -1;   /* marker only when there is a choice */
   char b1[32], line[64];
@@ -485,7 +664,7 @@ static void draw_lines_box(int top, int *next) {
     snprintf(line, sizeof(line), "%2d", i); tui_put(r, X + C_LN, TC_VALUE, line);
     put_padded(r, X + C_DEV, TC_VALUE, l->device, 14);
     snprintf(line, sizeof(line), "%5d", l->speed); tui_put(r, X + C_SPD, TC_VALUE, line);
-    put_padded(r, X + C_ST, l->connected ? TC_ACCENT : TC_DIM, l->connected ? "CARRIER" : "IDLE", 8);
+    put_padded(r, X + C_ST, l->connected ? TC_REV_ACCENT : TC_DIM, l->connected ? " ONLINE" : "IDLE", 8);
     if(l->connected) {
       put_padded(r, X + C_CALL, allowlist_has(l->peer_ip) ? TC_OK : TC_VALUE, l->peer_ip, 16);
       put_right(r, X + C_DUR, TC_VALUE, fmt_dur((int)(time(NULL) - l->session_start), b1, sizeof(b1)), 5);
@@ -494,6 +673,7 @@ static void draw_lines_box(int top, int *next) {
     }
     tui_put(r, X + C_DCD + 1, l->connected ? TC_OK : TC_DIM, tui_glyph(l->connected ? G_DOT_ON : G_DOT_OFF));
     tui_put(r, X + C_DTR + 1, l->dtr ? TC_OK : TC_DIM, tui_glyph(l->dtr ? G_DOT_ON : G_DOT_OFF));
+    if(W >= 108) put_leds(r, W - 2 - NLED * 3, l, anim_phase());   /* the modem lights, when there is room */
     r++; shown++;
   }
   if(!shown) tui_put(r, 2, TC_DIM, "NO LINES CONFIGURED");
@@ -639,8 +819,10 @@ static void draw_help_page(int top, int h) {
     "S  BACK TO THE MAIN SCREEN / REPAINT",
     "Q  QUIT TCPSER (ASKS Y/N): HANGS UP CALLERS, SAVES STATS",
     "",
-    "DATA FLOW: ARROWS MOVE WHILE BYTES DO. TURQUOISE = CALLER TO BBS,",
-    "PINK = BBS TO CALLER. SHIELD FLASHES RED ON A DROP, GATE YELLOW ON",
+    "SESSION SHOWS ONLINE OR STANDBY. LINES HAS THE MODEM LIGHTS: MR READY,",
+    "TR DTR, SD SEND, RD RECEIVE, OH OFF HOOK, CD CARRIER, AA AUTO ANSWER,",
+    "HS HIGH SPEED. DATA FLOW: ARROWS MOVE WHILE BYTES DO, TURQUOISE TO THE",
+    "BBS, PINK TO THE CALLER; SHIELD FLASHES RED ON A DROP, GATE YELLOW ON",
     "A FAILURE. GREEN ADDRESSES ARE ON THE ALLOWLIST.",
     "TERMINAL: 60X16 MINIMUM; A TALLER SCREEN SHOWS MORE PANELS.",
     "COLOURS: 256 / 16 / MONO FROM $TERM; NO_COLOR AND TCPSER_TUI_ASCII",
@@ -662,23 +844,24 @@ static void render(void) {
     return;
   }
   char b1[64];
-  /* system line: product, name, ON AIR lamp, clock */
-  tui_put(0, 1, TC_ACCENT, "TCPSER " VERSION);
+  /* system line: product, name between scene-style brackets, carrier lamp, clock */
   {
+    int on = lines_online(NULL), fade = tui_is_utf8() && W >= 100;
+    int c = 1;
+    if(fade) { tui_put(0, 1, TC_ACCENT, "\xe2\x96\x91\xe2\x96\x92\xe2\x96\x93"); c = 5; }
+    tui_put(0, c, TC_ACCENT, "TCPSER " VERSION);
     const char *name = EDITION;
-    int len = (int)strlen(name);
-    tui_put(0, (W - len) / 2, TC_VALUE, name);
+    int len = (int)strlen(name), nc = (W - len) / 2;
+    tui_put(0, nc, TC_VALUE, name);
+    if(W >= 90) { tui_put(0, nc - 4, TC_KEY, "-=["); tui_put(0, nc + len + 1, TC_KEY, "]=-"); len += 8; }
     time_t now = time(NULL); struct tm tmb; localtime_r(&now, &tmb);
     strftime(b1, sizeof(b1), "%d/%m/%y %H:%M:%S", &tmb);
-    int cc = W - 1 - (int)strlen(b1);
+    int cc = W - 1 - (int)strlen(b1) - (fade ? 4 : 0);
     tui_put(0, cc, TC_KEY, b1);
-    int on = lines_online(NULL);
-    const char *lamp = on ? "ON AIR" : "STANDBY";
-    int lc = cc - 4 - (int)strlen(lamp);
-    if(lc > (W + len) / 2 + 2) {
-      tui_put(0, lc, on ? TC_REV_ACCENT : TC_DIM, on ? " ON AIR " : "STANDBY");
-      if(!on) tui_put(0, lc - 2, TC_OK, tui_glyph(G_DOT_OFF));
-    }
+    if(fade) tui_put(0, W - 4, TC_ACCENT, "\xe2\x96\x93\xe2\x96\x92\xe2\x96\x91");
+    const char *lamp = on ? " ON AIR " : " NO CARRIER ";
+    int lc = cc - 2 - (int)strlen(lamp);
+    if(lc > (W + len) / 2 + 2) tui_put(0, lc, on ? ((anim_phase() & 2) ? TC_REV_ACCENT : TC_REV) : TC_DIM, lamp);
   }
   tui_hrule(1, 0, W);
 
@@ -692,7 +875,8 @@ static void render(void) {
      * compact flow, lines, a bottom area) and spend what is left on upgrades,
      * most valuable first. */
     int nl = 0; lines_online(&nl); if(nl == 0) nl = 1;
-    int lines_h = nl + 3;
+    int band = W >= 120;                              /* room for the banner beside the modem panel */
+    int lines_h = band ? (nl + 3 > 6 ? nl + 3 : 6) : nl + 3;
     int R = msg_row - top;
     int kpi_h = 1, flow_h = 4, graph_h = 0;
     int bottom = R - kpi_h - flow_h - lines_h;
@@ -708,9 +892,11 @@ static void render(void) {
     int y = top, next = top;
     if(kpi_h == 3) draw_kpi_tiles(y); else draw_kpi_strip(y);
     y += kpi_h;
+    /* who is on the line comes first */
+    if(band) { int lw = W / 2; draw_session(y, 0, lines_h, lw); draw_lines_panel(y, lw, lines_h, W - lw); y += lines_h; }
+    else { draw_lines_box(y, &next); y = next; }
     if(flow_h) { draw_flow(y, flow_h); y += flow_h; }
     if(graph_h) { draw_graph_row(y, graph_h); y += graph_h; }
-    draw_lines_box(y, &next); y = next;
     int remaining = msg_row - y;
     if(W >= 124 && remaining >= 8) {
       /* wide: traffic on the left, callers over events on the right */

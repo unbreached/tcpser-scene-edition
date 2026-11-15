@@ -146,10 +146,15 @@ level shifter. No libraries beyond libc and pthreads.
 
 **Terminal (`-M`)** — a small operations wall for the gateway, on stderr,
 over SSH, on a Pi. From the top: system line with an ON AIR lamp, a row of
-counters, a **DATA FLOW** diagram (callers → shield → gate → modem → C64) whose
-arrows move while bytes do and whose stages flash on a drop or a failed gate,
-a throughput graph (bytes per second, last minute) beside calls per hour
-(24 h), the LINES table, live hex + text traffic, recent callers and the
+counters, then the two things you look at first: a **SESSION** banner that
+says ONLINE or STANDBY in block letters (caller, duration and bytes under it,
+a scanner sweeping while the line waits) beside a **LINES** panel with the
+eight lights of a Hayes modem for every line (MR TR SD RD OH CD AA HS; SD and
+RD flicker with the traffic). Below them a **DATA FLOW** diagram (callers →
+shield → gate → modem → C64) whose arrows move while bytes do and whose
+stages light up on a drop or a failed gate, a throughput graph (bytes per
+second, last minute) beside calls per hour (24 h), live hex + text traffic,
+recent callers and the
 EVENTS pane. `G` opens a full-screen graphs page (throughput, traffic per
 minute, calls, top sources); `B` the blocklist and allowlist. Drawn on a
 diffed cell buffer: no flicker, a few bytes per refresh on a quiet screen,
@@ -205,6 +210,9 @@ in `src/web/` and is embedded into the binary at build time.
 
 <p align="center">
   <img src="docs/img/terminal-dashboard.png" alt="tcpser terminal dashboard: counters, data flow diagram, throughput and call graphs, lines, hex traffic, recent callers, events" width="900">
+</p>
+<p align="center">
+  <img src="docs/img/terminal-standby.png" alt="tcpser terminal dashboard waiting for a call: STANDBY banner with scanner, modem lights idle" width="900">
 </p>
 <p align="center">
   <img src="docs/img/terminal-graphs.png" alt="tcpser terminal dashboard, graphs page: throughput per second, traffic per minute, calls per hour, top sources" width="900">

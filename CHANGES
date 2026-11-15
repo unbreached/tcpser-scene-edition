@@ -396,3 +396,7 @@
             graphs, traffic / callers / events side by side on a wide
             terminal, and a graphs page (G) with traffic per minute and top
             sources. Scales from 60x16 up; allowlisted addresses show green
+            SESSION banner (ONLINE / STANDBY in block letters, caller,
+            duration, bytes; a scanner while the line waits) beside a LINES
+            panel with the eight Hayes modem lights per line (MR TR SD RD OH
+            CD AA HS, SD/RD flicker with traffic); ANSI-art title fades
