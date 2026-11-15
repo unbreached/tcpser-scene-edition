@@ -1,0 +1,74 @@
+name: build
+
+# Builds tcpser on the Linux targets people actually run it on (x86-64, 64-bit
+# and 32-bit ARM-like, glibc and musl) and on macOS. Any compiler warning or
+# error fails the job, then the test suite runs against the binary.
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    name: ${{ matrix.os }} / ${{ matrix.cc }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04, ubuntu-24.04-arm]
+        cc: [gcc, clang]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build (warnings are errors)
+        run: |
+          $CC --version
+          make CC=$CC 2>&1 | tee build.log
+          test -x tcpser
+          ! grep -nE "warning:|error:" build.log
+        env:
+          CC: ${{ matrix.cc }}
+      - name: Test
+        run: make CC=${{ matrix.cc }} check
+
+  linux-32bit:
+    name: 32-bit (as on Raspberry Pi OS armhf)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update -q && sudo apt-get install -y -q gcc-multilib
+      - name: Build (warnings are errors)
+        run: |
+          make CC="gcc -m32" 2>&1 | tee build.log
+          test -x tcpser
+          ! grep -nE "warning:|error:" build.log
+      - name: Test
+        run: make CC="gcc -m32" check
+
+  musl:
+    name: Alpine (musl)
+    runs-on: ubuntu-24.04
+    container: alpine:3.20
+    steps:
+      - run: apk add --no-cache build-base python3 git
+      - uses: actions/checkout@v4
+      - name: Build (warnings are errors)
+        run: |
+          make 2>&1 | tee build.log
+          test -x tcpser
+          ! grep -nE "warning:|error:" build.log
+      - name: Test
+        run: make check
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build (warnings are errors)
+        run: |
+          make 2>&1 | tee build.log
+          test -x tcpser
+          ! grep -nE "warning:|error:" build.log
+      - name: Test
+        run: make check
