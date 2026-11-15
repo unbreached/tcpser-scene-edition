@@ -521,7 +521,7 @@ static void handle_request(int fd) {
      * skips the gate, so this sits behind the same guards as hang up. */
     if(strncmp(path, "/api/allow/", 11) == 0 || strncmp(path, "/api/unallow/", 13) == 0) {
       int add = path[5] == 'a';
-      char ip[32]; snprintf(ip, sizeof(ip), "%s", path + (add ? 11 : 13));
+      char ip[32]; snprintf(ip, sizeof(ip), "%.31s", path + (add ? 11 : 13));
       ip[strcspn(ip, "?")] = 0;
       int rc = add ? allowlist_add(ip) : allowlist_remove(ip);
       if(rc == -1) { send_text(fd, 400, "Not an IPv4 address"); close(fd); return; }

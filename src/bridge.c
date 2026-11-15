@@ -159,7 +159,7 @@ int allowlist_list(char out[][16], int max) {
   int n = 0;
   pthread_mutex_lock(&g_allow_mutex);
   allowlist_load_if_needed();
-  for(; n < g_allow_count && n < max; n++) snprintf(out[n], 16, "%s", g_allow[n]);
+  for(; n < g_allow_count && n < max; n++) snprintf(out[n], 16, "%.15s", g_allow[n]);
   pthread_mutex_unlock(&g_allow_mutex);
   return n;
 }

@@ -145,8 +145,8 @@ level shifter. No libraries beyond libc and pthreads.
 <td width="50%" valign="top">
 
 **Terminal (`-M`)** — a small operations wall for the gateway, on stderr,
-over SSH, on a Pi. From the top: system line with an ON AIR lamp, counter
-tiles, a **DATA FLOW** diagram (callers → shield → gate → modem → C64) whose
+over SSH, on a Pi. From the top: system line with an ON AIR lamp, a row of
+counters, a **DATA FLOW** diagram (callers → shield → gate → modem → C64) whose
 arrows move while bytes do and whose stages flash on a drop or a failed gate,
 a throughput graph (bytes per second, last minute) beside calls per hour
 (24 h), the LINES table, live hex + text traffic, recent callers and the

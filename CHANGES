@@ -390,7 +390,7 @@
             /api/unallow/<ip>); terminal dashboard: A allows the caller,
             B shows both lists, X removes the last entry
   MONITOR:  the -M terminal dashboard is redesigned as an operations screen:
-            ON AIR lamp, counter tiles, an animated DATA FLOW diagram
+            ON AIR lamp, a counter row, an animated DATA FLOW diagram
             (callers > shield > gate > modem > C64; stages flash on a drop
             or a failed gate), throughput per second and calls per hour
             graphs, traffic / callers / events side by side on a wide

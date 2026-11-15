@@ -171,6 +171,13 @@ static void put_center(int row, int left, int width, int color, const char *s) {
   int n = cells_of(s); if(n > width) n = width;
   tui_putn(row, left + (width - n) / 2, color, s, width);
 }
+/* centred on column `mid`, kept inside the frame */
+static void put_mid(int row, int mid, int color, const char *s) {
+  int n = cells_of(s), c = mid - n / 2;
+  if(c + n > W - 2) c = W - 2 - n;
+  if(c < 2) c = 2;
+  tui_putn(row, c, color, s, W - 2 - c);
+}
 static int lines_online(int *total) {
   int on = 0, n = 0;
   for(int i = 0; i < DASH_MAX_LINES; i++) if(g_dash.lines[i].inited) { n++; if(g_dash.lines[i].connected) on++; }
@@ -179,7 +186,7 @@ static int lines_online(int *total) {
 }
 
 /* ---- counters -------------------------------------------------------------- */
-typedef struct { const char *label; char val[24]; int color; } kpi_t;
+typedef struct { const char *label; char val[48]; int color; } kpi_t;
 #define NKPI 8
 static void build_kpis(kpi_t *k) {
   int nblk = blocklist_count();
@@ -202,20 +209,19 @@ static void draw_kpi_strip(int row) {
     tui_put(row, c, k[i].color, k[i].val); c += (int)strlen(k[i].val) + 2;
   }
 }
+/* tall screens: label over value in even columns, no frames */
 static void draw_kpi_tiles(int top) {
   kpi_t k[NKPI]; build_kpis(k);
-  int tw = W / NKPI;
+  int tw = (W - 2) / NKPI;
   for(int i = 0; i < NKPI; i++) {
-    int left = i * tw, w = (i == NKPI - 1) ? W - left : tw;
-    char t[24]; snprintf(t, sizeof(t), " %s ", k[i].label);
-    tui_box(top, left, 3, w, NULL);
-    put_clip(top, left + 2, TC_HEAD, t, left + w - 1);
-    put_clip(top + 1, left + 2, k[i].color, k[i].val, left + w - 1);
+    int left = 1 + i * tw;
+    put_clip(top, left, TC_HEAD, k[i].label, left + tw - 1);
+    put_clip(top + 1, left, k[i].color, k[i].val, left + tw - 1);
   }
 }
 
 /* ---- data flow ------------------------------------------------------------- */
-typedef struct { const char *title; char detail[24]; char status[40]; int frame; int scolor; } flow_node_t;
+typedef struct { const char *title; char detail[48]; char status[64]; int frame; int scolor; } flow_node_t;
 #define NFLOW 5
 static void build_flow(flow_node_t *n, time_t now) {
   int total = 0, on = lines_online(&total);
@@ -279,28 +285,28 @@ static void draw_flow(int top, int h) {
   }
   int inner = W - 4;
   int nw = W >= 118 ? 16 : W >= 96 ? 14 : W >= 78 ? 12 : 10;
-  int gw = (inner - NFLOW * nw) / (NFLOW - 1); if(gw > 12) gw = 12; if(gw < 1) gw = 1;
+  int gw = (inner - NFLOW * nw) / (NFLOW - 1); if(gw > 18) gw = 18; if(gw < 1) gw = 1;
   int x0 = 2 + (inner - (NFLOW * nw + (NFLOW - 1) * gw)) / 2;
-  if(h >= 7) {
+  if(h >= 5) {
+    /* three plain rows per stage: name (lit while it is doing something),
+     * what it is, and its running count. Arrows to the BBS run beside the
+     * names, arrows back to the caller beside the second row. */
     for(int i = 0; i < NFLOW; i++) {
       int x = x0 + i * (nw + gw), f = n[i].frame;
-      tui_putn(top + 1, x, f, U("\xe2\x95\x94", "+"), 1); tui_fill(top + 1, x + 1, nw - 2, f, U("\xe2\x95\x90", "=")); tui_putn(top + 1, x + nw - 1, f, U("\xe2\x95\x97", "+"), 1);
-      tui_putn(top + 4, x, f, U("\xe2\x95\x9a", "+"), 1); tui_fill(top + 4, x + 1, nw - 2, f, U("\xe2\x95\x90", "=")); tui_putn(top + 4, x + nw - 1, f, U("\xe2\x95\x9d", "+"), 1);
-      for(int r = 2; r <= 3; r++) { tui_putn(top + r, x, f, U("\xe2\x95\x91", "|"), 1); tui_putn(top + r, x + nw - 1, f, U("\xe2\x95\x91", "|"), 1); }
-      put_center(top + 2, x + 1, nw - 2, f == TC_FRAME ? TC_HEAD : f, n[i].title);
-      put_center(top + 3, x + 1, nw - 2, TC_VALUE, n[i].detail);
-      put_center(top + 5, i == 0 ? x : i == NFLOW - 1 ? x - gw : x - gw / 2, nw + gw, n[i].scolor, n[i].status);
-      if(i < NFLOW - 1) {
+      put_center(top + 1, x, nw, f == TC_FRAME ? TC_HEAD : f, n[i].title);
+      put_center(top + 2, x, nw, TC_VALUE, n[i].detail);
+      put_mid(top + 3, x + nw / 2, n[i].scolor, n[i].status);
+      if(i < NFLOW - 1 && gw >= 3) {
         int before_gate = i < 2;
-        flow_arrows(top + 2, x + nw, gw, +1, rx || (before_gate && knock), carrier, phase);
-        flow_arrows(top + 3, x + nw, gw, -1, tx, carrier, phase);
+        flow_arrows(top + 1, x + nw + 1, gw - 2, +1, rx || (before_gate && knock), carrier, phase);
+        flow_arrows(top + 2, x + nw + 1, gw - 2, -1, tx, carrier, phase);
       }
     }
   } else {
     for(int i = 0; i < NFLOW; i++) {
       int x = x0 + i * (nw + gw), f = n[i].frame;
       put_center(top + 1, x, nw, f == TC_FRAME ? TC_HEAD : f, n[i].title);
-      if(h >= 4) put_center(top + 2, i == 0 ? x : i == NFLOW - 1 ? x - gw + 1 : x - gw / 2, nw + gw - 1, n[i].scolor, i == 4 ? n[i].detail : n[i].status);
+      if(h >= 4) put_mid(top + 2, x + nw / 2, n[i].scolor, i == 4 ? n[i].detail : n[i].status);
       if(i < NFLOW - 1) {
         int before_gate = i < 2;
         if(tx && !(rx && (phase & 4))) flow_arrows(top + 1, x + nw, gw, -1, 1, carrier, phase);
@@ -693,9 +699,9 @@ static void render(void) {
     /* rows the bottom area must keep: less when its panes sit side by side */
     int minb = W >= 124 ? 8 : W >= 100 ? 10 : 12;
     if(bottom < 5) { bottom += flow_h; flow_h = 0; }                     /* tiny screen: no flow */
-    if(flow_h && bottom - 3 >= minb) { flow_h = 7; bottom -= 3; }        /* boxes and both arrow rows */
+    if(flow_h && bottom - 1 >= minb) { flow_h = 5; bottom -= 1; }        /* both arrow rows */
     if(bottom - 5 >= minb) { graph_h = 5; bottom -= 5; }                 /* graphs */
-    if(W >= 96 && bottom - 2 >= minb) { kpi_h = 3; bottom -= 2; }        /* counter tiles */
+    if(W >= 96 && bottom - 2 >= minb) { kpi_h = 3; bottom -= 2; }        /* counters as two rows + a blank */
     if(graph_h && bottom - 2 >= minb + 3) { graph_h += 2; bottom -= 2; }
     if(graph_h && bottom - 2 >= minb + 6) { graph_h += 2; bottom -= 2; }
 
