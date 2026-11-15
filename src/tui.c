@@ -124,8 +124,10 @@ void tui_size(int *w, int *h) {
   struct winsize ws;
   int cw = 80, ch = 24;
   if(ioctl(STDERR_FILENO, TIOCGWINSZ, &ws) == 0) { if(ws.ws_col > 0) cw = ws.ws_col; if(ws.ws_row > 0) ch = ws.ws_row; }
-  if(cw > MAXW) cw = MAXW; if(ch > MAXH) ch = MAXH;
-  if(cw < 20) cw = 20; if(ch < 5) ch = 5;
+  if(cw > MAXW) cw = MAXW;
+  if(ch > MAXH) ch = MAXH;
+  if(cw < 20) cw = 20;
+  if(ch < 5) ch = 5;
   if(cw != g_w || ch != g_h) g_full = 1;
   g_w = cw; g_h = ch;
   *w = cw; *h = ch;

@@ -1,4 +1,5 @@
 #include <sys/types.h>
+#include <sys/select.h>   // fd_set, select (not pulled in by other headers on musl)
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>

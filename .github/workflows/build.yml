@@ -61,6 +61,21 @@ jobs:
       - name: Test
         run: make check
 
+  gcc-latest:
+    name: newest gcc (Debian)
+    runs-on: ubuntu-24.04
+    container: gcc:latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build (warnings are errors)
+        run: |
+          gcc --version
+          make CC=gcc 2>&1 | tee build.log
+          test -x tcpser
+          ! grep -nE "warning:|error:" build.log
+      - name: Test
+        run: python3 --version && make CC=gcc check
+
   macos:
     runs-on: macos-latest
     steps:

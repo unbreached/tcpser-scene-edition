@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <sys/select.h>   // fd_set, select (not pulled in by other headers on musl)
 
 #include <sys/socket.h>   // for recv...
 #include <unistd.h>       // for read...
@@ -1337,7 +1338,7 @@ void *bridge_task(void *arg) {
         // probably should exit...
         exit(-1);
       } else {
-        snprintf(cfg->last_peer, sizeof(cfg->last_peer), "%s", cfg->dialno);
+        snprintf(cfg->last_peer, sizeof(cfg->last_peer), "%.*s", (int)sizeof(cfg->last_peer) - 1, cfg->dialno);
         cfg->conn_type = MDM_CONN_OUTGOING;
       }
     }

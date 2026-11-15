@@ -522,7 +522,7 @@ int mdm_connect(modem_config *cfg) {
   snprintf(j->number, sizeof(j->number), "%s", cfg->dialno);
   j->s7 = cfg->s[S_REG_CARRIER_WAIT] > 0 ? cfg->s[S_REG_CARRIER_WAIT] : 50;
   j->s8 = cfg->s[S_REG_COMMA_PAUSE];
-  snprintf(cfg->last_peer, sizeof(cfg->last_peer), "%s", cfg->dialno);
+  snprintf(cfg->last_peer, sizeof(cfg->last_peer), "%.*s", (int)sizeof(cfg->last_peer) - 1, cfg->dialno);
   spawn_thread((void *)dial_thread, (void *)j, "DIAL");
   return 0;
 }

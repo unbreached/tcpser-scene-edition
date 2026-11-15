@@ -18,6 +18,7 @@
  */
 
 #include <stdio.h>
+#include <sys/select.h>   // fd_set, select (not pulled in by other headers on musl)
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
@@ -162,7 +163,8 @@ static void build_status_json(jbuf_t *b) {
   for(int i = 0; i < DASH_MAX_LINES; i++) {
     dash_line_t *l = &g_dash.lines[i];
     if(!l->inited) continue;
-    if(!first) jb_raw(b, ","); first = 0;
+    if(!first) jb_raw(b, ",");
+    first = 0;
     jb_printf(b, "{\"id\":%d,\"device\":", i); jb_qstr(b, l->device);
     jb_printf(b, ",\"speed\":%d,\"state\":\"%s\",\"peer\":", l->speed, l->connected ? "connected" : "idle");
     jb_qstr(b, l->connected ? l->peer_ip : NULL);

@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <sys/select.h>   // fd_set, select (not pulled in by other headers on musl)
 #include <stdlib.h>
 #include <string.h>
 #include <signal.h>
