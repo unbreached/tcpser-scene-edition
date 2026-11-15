@@ -3,6 +3,8 @@
  *   GET  /api/events            SSE "status" events (same JSON)
  *   POST /api/line/<n>/hangup   hang up the caller on line n   (X-Requested-With: tcpser)
  *   POST /api/unblock           clear timed blocks
+ *   POST /api/allow/<ip>        add an address to the allowlist (skips the gate)
+ *   POST /api/unallow/<ip>      remove it again
  * Screens: F2 status, F3 callers, F4 traffic, F6 security (also keys 1-4).
  * Everything caller-derived is rendered with textContent, never innerHTML. */
 (function () {
@@ -126,13 +128,29 @@
     });
     if (!lines.length) host.append(span("empty", "NO LINES CONFIGURED"));
   }
-  function renderCallers(hist) {
+  const IPV4 = /^(25[0-5]|2[0-4]\d|1?\d?\d)(\.(25[0-5]|2[0-4]\d|1?\d?\d)){3}$/;
+  function actBtn(text, cls, fn) { const b = document.createElement("button"); b.type = "button"; b.className = "act" + (cls ? " " + cls : ""); b.textContent = text; b.onclick = fn; return b; }
+  const allowIp = (ip) => ask(`ALLOW ${ip}? IT WILL SKIP THE GATE AND THE BLOCKLIST`, () => act("/api/allow/" + ip, `${ip} ALLOWED`));
+  const unallowIp = (ip) => ask(`REMOVE ${ip} FROM THE ALLOWLIST?`, () => act("/api/unallow/" + ip, `${ip} REMOVED FROM THE ALLOWLIST`));
+  function renderAllowlist(al) {
+    const ul = $("allowlist"); ul.textContent = ""; $("allow-empty").hidden = al.length > 0; $("allow-count").textContent = al.length ? String(al.length) : "";
+    al.forEach((ip) => { const li = document.createElement("li"); li.append(span("ip", ip), actBtn("REMOVE", "", () => unallowIp(ip))); ul.appendChild(li); });
+  }
+  $("allow-form").addEventListener("submit", (e) => {
+    e.preventDefault();
+    const f = $("allow-ip"), ip = f.value.trim();
+    if (!IPV4.test(ip)) { msg("NOT AN IPV4 ADDRESS: " + (ip || "(EMPTY)"), "err"); return; }
+    f.value = ""; f.blur(); allowIp(ip);
+  });
+  function renderCallers(hist, allowed) {
     const host = $("callers"); host.textContent = ""; $("callers-empty").hidden = hist.length > 0;
     hist.forEach((h) => {
       const pre = document.createElement("pre"); pre.className = "rec";
       pre.append(span("t", pad(timeOf(h.time), 8) + " " + pad(dateOf(h.time), 10)), " " + pad(h.ip, 16) + " ");
       pre.append(span("res-" + h.result, pad(h.result.replace("_", " "), 13)));
-      pre.append(" " + pad(h.duration ? fmtDur(h.duration) : "", 5, true) + " ", span("in", pad(h.bytes_in ? fmtBytes(h.bytes_in) : "", 6, true)), " ", span("out", pad(h.bytes_out ? fmtBytes(h.bytes_out) : "", 7, true)));
+      pre.append(" " + pad(h.duration ? fmtDur(h.duration) : "", 5, true) + " ", span("in", pad(h.bytes_in ? fmtBytes(h.bytes_in) : "", 6, true)), " ", span("out", pad(h.bytes_out ? fmtBytes(h.bytes_out) : "", 7, true)), "  ");
+      if (allowed.includes(h.ip)) pre.append(span("allowed", "ALLOWED"));
+      else if (IPV4.test(h.ip)) pre.append(actBtn("ALLOW", "ok", () => allowIp(h.ip)));
       host.appendChild(pre);
     });
   }
@@ -148,10 +166,12 @@
     });
     if (atBottom) feed.scrollTop = feed.scrollHeight;
   }
-  function renderBlocklist(bl) {
+  function renderBlocklist(bl, allowed) {
     const ul = $("blocklist"); ul.textContent = ""; $("block-empty").hidden = bl.length > 0; $("block-count").textContent = bl.length ? String(bl.length) : "";
     $("fkeys").querySelector('[data-f="F9"]').disabled = !bl.some((b) => b.kind === "timed");
-    bl.forEach((b) => { const li = document.createElement("li"); li.append(span("ip", b.ip), span("kind " + b.kind, b.kind === "permanent" ? "PERMANENT" : "TIMED, UNTIL " + timeOf(b.expires))); ul.appendChild(li); });
+    bl.forEach((b) => { const li = document.createElement("li"); li.append(span("ip", b.ip), span("kind " + b.kind, b.kind === "permanent" ? "PERMANENT" : "TIMED, UNTIL " + timeOf(b.expires)));
+      if (allowed.includes(b.ip)) li.append(span("allowed ok", "ALLOWED ANYWAY")); else li.append(actBtn("ALLOW", "ok", () => allowIp(b.ip)));
+      ul.appendChild(li); });
     $("c-blocked").textContent = bl.length;
   }
   // an event line takes the colour of what happened: red for blocks and floods,
@@ -175,9 +195,10 @@
     $("clock").textContent = dateOf(d.now) + " " + timeOf(d.now);
     // render only what is on screen (plus the cheap bits), the rest on page switch
     if (page === "status") { renderLines(d.lines); renderCharts(d); }
-    if (page === "callers") renderCallers(d.history);
+    const allowed = d.allowlist || [];
+    if (page === "callers") renderCallers(d.history, allowed);
     if (page === "traffic") renderTraffic(d);
-    renderBlocklist(d.blocklist); renderEvents(d.events);
+    renderBlocklist(d.blocklist, allowed); renderAllowlist(allowed); renderEvents(d.events);
     $("fkeys").querySelector('[data-f="F8"]').disabled = !d.lines.some((l) => l.state === "connected");
   }
 

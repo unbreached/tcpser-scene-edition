@@ -775,6 +775,45 @@ def t_web_guard():
         srv.stop()
 
 
+@test("allowlist from the web console: allow an IP, it skips the gate at once, remove it again")
+def t_allow_api():
+    wport = free_port()
+    srv = Server("-x", "-I", "-H", str(wport))
+    path = os.path.join(srv.tmp, "allowlist")
+    with open(path, "w") as f:
+        f.write("# friends\n203.0.113.9")          # a comment, and no newline at the end
+    def http(req):
+        s = socket.create_connection(("127.0.0.1", wport))
+        s.sendall(req); r = rd(s, 2.0); s.close(); return r
+    post = lambda p, hdr=b"X-Requested-With: tcpser\r\n": http(b"POST " + p + b" HTTP/1.1\r\nHost: localhost\r\n" + hdr + b"\r\n")
+    status = lambda: http(b"GET /api/status HTTP/1.1\r\nHost: localhost\r\n\r\n").replace(b" ", b"")
+    try:
+        assert wait_port(wport)
+        assert post(b"/api/allow/127.0.0.1", b"").startswith(b"HTTP/1.1 403"), "allow without the CSRF header was accepted"
+        for bad in (b"999.1.1.1", b"1.2.3", b"evil", b"1.2.3.4%0a5.6.7.8"):
+            r = post(b"/api/allow/" + bad)
+            assert not r.startswith(b"HTTP/1.1 200"), f"bad address accepted: {bad!r}"
+        r = post(b"/api/allow/127.0.0.1")
+        assert r.startswith(b"HTTP/1.1 200") and b'"changed":true' in r, r[:200]
+        assert b'"changed":false' in post(b"/api/allow/127.0.0.1"), "adding twice changed the file again"
+        text = open(path).read()
+        assert text == "# friends\n203.0.113.9\n127.0.0.1\n", f"allowlist file: {text!r}"
+        assert b'"allowlist":["203.0.113.9","127.0.0.1"]' in status(), "allowlist missing from /api/status"
+        # allowed: the modem rings without the BACKSPACE gate
+        v = srv.vice(); c = srv.caller()
+        r = rd(v, 3.0, until=b"RING")
+        assert b"RING" in r, f"allowed caller still had to pass the gate: {r!r}"
+        c.close(); v.close(); time.sleep(0.5)
+        r = post(b"/api/unallow/127.0.0.1")
+        assert r.startswith(b"HTTP/1.1 200") and b'"changed":true' in r, r[:200]
+        text = open(path).read()
+        assert text == "# friends\n203.0.113.9\n", f"allowlist file after removal: {text!r}"
+        assert b'"allowlist":["203.0.113.9"]' in status()
+        assert srv.alive()
+    finally:
+        srv.stop()
+
+
 @test("ip232: DCD state is sent to an emulator when it attaches")
 def t_ip232_attach():
     srv = Server("-i", "&C0")

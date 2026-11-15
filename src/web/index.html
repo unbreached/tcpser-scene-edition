@@ -81,7 +81,7 @@
 <div class="page" data-page="callers" hidden>
 <section class="scr tall" aria-labelledby="t-call" data-c="tur">
   <h2 class="scrt" id="t-call"><span class="hi">RECENT CALLERS</span> <span class="dim">NEWEST FIRST</span></h2>
-  <div class="cols"><pre class="rec hdr" aria-hidden="true">TIME     DATE       CALLER           RESULT        DUR     IN      OUT</pre>
+  <div class="cols"><pre class="rec hdr" aria-hidden="true">TIME     DATE       CALLER           RESULT        DUR     IN      OUT  ALLOWLIST</pre>
   <div id="callers"></div>
   <p class="empty" id="callers-empty">NO CALLS YET</p></div>
 </section>
@@ -118,15 +118,28 @@
     <p class="empty" id="events-empty">NOTHING YET</p>
   </section>
 </div>
-<section class="scr" aria-labelledby="t-gate" data-c="yel">
-  <h2 class="scrt" id="t-gate"><span class="hi">GATE</span></h2>
-  <dl class="kv">
-    <dt>MODE</dt><dd id="g-mode">-</dd>
-    <dt>TIMEOUT</dt><dd class="num" id="g-timeout">-</dd>
-    <dt>BLOCK AFTER</dt><dd class="num" id="g-fails">-</dd>
-    <dt>RATE LIMIT</dt><dd>1 ATTEMPT / 5 S PER IP</dd>
-  </dl>
-</section>
+<div class="two">
+  <section class="scr" aria-labelledby="t-allow" data-c="grn">
+    <h2 class="scrt" id="t-allow"><span class="hi">ALLOWLIST</span> <span class="dim num" id="allow-count"></span></h2>
+    <form class="entry" id="allow-form" autocomplete="off">
+      <label class="lbl" for="allow-ip">ALLOW IP</label>
+      <input id="allow-ip" name="ip" type="text" inputmode="decimal" maxlength="15" placeholder="___.___.___.___" spellcheck="false" aria-describedby="t-allow">
+      <button type="submit" class="act ok">ENTER=ADD</button>
+    </form>
+    <ul class="list" id="allowlist"></ul>
+    <p class="empty" id="allow-empty">NOBODY ALLOWED YET</p>
+    <p class="note">AN ALLOWED ADDRESS SKIPS THE GATE, THE RATE LIMIT AND THE BLOCKLIST.</p>
+  </section>
+  <section class="scr" aria-labelledby="t-gate" data-c="yel">
+    <h2 class="scrt" id="t-gate"><span class="hi">GATE</span></h2>
+    <dl class="kv">
+      <dt>MODE</dt><dd id="g-mode">-</dd>
+      <dt>TIMEOUT</dt><dd class="num" id="g-timeout">-</dd>
+      <dt>BLOCK AFTER</dt><dd class="num" id="g-fails">-</dd>
+      <dt>RATE LIMIT</dt><dd>1 ATTEMPT / 5 S PER IP</dd>
+    </dl>
+  </section>
+</div>
 </div>
 
 <section class="scr locked" id="locked" hidden>

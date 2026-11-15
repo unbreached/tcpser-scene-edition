@@ -384,3 +384,8 @@
             amber, white) remain: F7 in the web console, P in the terminal
             dashboard, --phosphor color|green|amber|white
   BUILD:    see the Linux build note above (musl fix, gcc warnings, CI)
+  ALLOW:    allowlist editable from the dashboards: web console has an ALLOW
+            button on every caller and blocked address, an ALLOWLIST panel
+            with an input field and REMOVE buttons (POST /api/allow/<ip>,
+            /api/unallow/<ip>); terminal dashboard: A allows the caller,
+            B shows both lists, X removes the last entry

@@ -111,7 +111,17 @@ button { font: inherit; }
 .rec .res-BLOCKED, .rec .res-RATE_LIMITED { color: var(--bad); }
 .rec .res-GATE_PASS { color: var(--cyan); }
 .rec .act { color: var(--rev-fg); background: var(--red); padding: 0 4px; border: 0; cursor: pointer; text-shadow: none; }
-.rec .act:hover { background: var(--fg-hi); }
+.rec .act:hover, .act:hover { background: var(--fg-hi); }
+/* action chips outside a record, and the "allow" flavour */
+.act { color: var(--rev-fg); background: var(--red); padding: 0 4px; border: 0; cursor: pointer; text-shadow: none; font: inherit; }
+.act.ok, .rec .act.ok { background: var(--grn); }
+.rec .allowed { color: var(--grn); }
+.list li .act { margin-left: auto; }
+/* 5250 input field: underlined, no box */
+.entry { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: baseline; margin: 0 0 8px; }
+.entry input { font: inherit; width: 17ch; background: transparent; color: var(--fg-hi); border: 0; border-bottom: 1px solid var(--grn); padding: 0 2px; caret-color: var(--yel); text-shadow: inherit; }
+.entry input:focus { outline: none; background: color-mix(in srgb, var(--grn) 14%, transparent); }
+.entry input::placeholder { color: var(--fg-dim); }
 .empty, .note { color: var(--fg-dim); margin: 6px 0 0; }
 
 /* charts: block glyphs on the grid */
@@ -200,3 +210,4 @@ a { color: var(--tur); }
   .crt { padding: 8px max(12px, env(safe-area-inset-right, 0px)) 10px max(12px, env(safe-area-inset-left, 0px)); }
   .feed li { grid-template-columns: 1fr; gap: 2px; } .feed .n { text-align: left; }
 }
+.list li .allowed { margin-left: auto; color: var(--grn); }

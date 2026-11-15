@@ -17,6 +17,7 @@
 #include <errno.h>
 #include <dirent.h>
 #include <poll.h>
+#include <arpa/inet.h>    // inet_pton
 
 #include "util.h"
 #include "debug.h"
@@ -150,6 +151,89 @@ static int ip_is_allowed(const char *ip) {
   }
   pthread_mutex_unlock(&g_allow_mutex);
   return result;
+}
+
+int allowlist_has(const char *ip) { return ip_is_allowed(ip); }
+
+int allowlist_list(char out[][16], int max) {
+  int n = 0;
+  pthread_mutex_lock(&g_allow_mutex);
+  allowlist_load_if_needed();
+  for(; n < g_allow_count && n < max; n++) snprintf(out[n], 16, "%s", g_allow[n]);
+  pthread_mutex_unlock(&g_allow_mutex);
+  return n;
+}
+
+/* the cache must be re-read after we changed the file ourselves */
+static void allowlist_invalidate(void) { g_allow_last_check = 0; g_allow_mtime = 0; }
+
+static int is_ipv4(const char *ip) {
+  struct in_addr a;
+  return ip && strlen(ip) < INET_ADDRSTRLEN && inet_pton(AF_INET, ip, &a) == 1;
+}
+
+/* Append one address. The file is created 0600 when it does not exist yet;
+ * comments and the operator's own lines are left alone. */
+int allowlist_add(const char *ip) {
+  if(!is_ipv4(ip)) return -1;
+  int rc = 0;
+  pthread_mutex_lock(&g_allow_mutex);
+  allowlist_invalidate();
+  allowlist_load_if_needed();
+  for(int i = 0; i < g_allow_count; i++) if(strcmp(g_allow[i], ip) == 0) rc = 1;
+  if(rc == 0 && g_allow_count >= MAX_ALLOW) rc = -3;
+  if(rc == 0) {
+    int fd = open(allowlist_path(), O_RDWR | O_APPEND | O_CREAT | O_CLOEXEC, 0600);
+    if(fd < 0) rc = -2;
+    else {
+      char line[INET_ADDRSTRLEN + 2], last = '\n';
+      off_t size = lseek(fd, 0, SEEK_END);
+      if(size > 0 && pread(fd, &last, 1, size - 1) != 1) last = '\n';
+      int n = snprintf(line, sizeof(line), "%s%s\n", last == '\n' ? "" : "\n", ip);
+      if(write(fd, line, (size_t)n) != n) rc = -2;
+      close(fd);
+    }
+  }
+  allowlist_invalidate();
+  pthread_mutex_unlock(&g_allow_mutex);
+  return rc;
+}
+
+/* Rewrite the file without the address (temp file + rename, so a crash never
+ * leaves half a list). Everything else in the file is kept as it was. */
+int allowlist_remove(const char *ip) {
+  if(!is_ipv4(ip)) return 1;
+  int rc = 1;
+  pthread_mutex_lock(&g_allow_mutex);
+  const char *path = allowlist_path();
+  char tmp[600]; snprintf(tmp, sizeof(tmp), "%s.tmp", path);
+  FILE *in = fopen(path, "r");
+  if(in) {
+    struct stat st; mode_t mode = 0600;
+    if(fstat(fileno(in), &st) == 0) mode = st.st_mode & 0777;
+    int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+    FILE *out = fd >= 0 ? fdopen(fd, "w") : NULL;
+    if(!out) { if(fd >= 0) close(fd); rc = -2; }
+    else {
+      char line[256], key[256];
+      while(fgets(line, sizeof(line), in)) {
+        char *p = line; while(*p == ' ' || *p == '\t') p++;
+        snprintf(key, sizeof(key), "%s", p);
+        size_t n = strlen(key);
+        while(n > 0 && (key[n-1] == '\n' || key[n-1] == '\r' || key[n-1] == ' ')) key[--n] = 0;
+        if(strcmp(key, ip) == 0) { rc = 0; continue; }
+        fputs(line, out);
+      }
+      int bad = ferror(out) | fchmod(fileno(out), mode);
+      if(fclose(out) != 0) bad = 1;
+      if(bad || rc != 0) { unlink(tmp); if(bad) rc = -2; }
+      else if(rename(tmp, path) != 0) { unlink(tmp); rc = -2; }
+    }
+    fclose(in);
+  }
+  allowlist_invalidate();
+  pthread_mutex_unlock(&g_allow_mutex);
+  return rc;
 }
 
 /* Persistent blocklist file.

@@ -151,6 +151,8 @@ static void build_status_json(jbuf_t *b) {
   time_t now = time(NULL);
   block_info_t blocks[64];
   int nblocks = blocklist_list_ex(blocks, 64);     /* takes its own lock; do it before ours */
+  char allow[256][16];
+  int nallow = allowlist_list(allow, 256);
 
   dashboard_lock();
   iso_time(now, ts, sizeof(ts));
@@ -220,6 +222,10 @@ static void build_status_json(jbuf_t *b) {
     if(blocks[i].permanent) jb_raw(b, ",\"kind\":\"permanent\",\"expires\":null}");
     else { iso_time(blocks[i].until, ts, sizeof(ts)); jb_printf(b, ",\"kind\":\"timed\",\"expires\":\"%s\"}", ts); }
   }
+  jb_raw(b, "],");
+
+  jb_raw(b, "\"allowlist\":[");
+  for(int i = 0; i < nallow; i++) { if(i) jb_raw(b, ","); jb_qstr(b, allow[i]); }
   jb_raw(b, "],");
 
   /* activity series: oldest -> newest, ending at the current bucket */
@@ -509,6 +515,20 @@ static void handle_request(int fd) {
       int cleared = blocklist_unblock_all_timed();
       dashboard_note("web: cleared %d timed block(s)", cleared);
       char msg[64]; snprintf(msg, sizeof(msg), "{\"ok\":true,\"cleared\":%d}", cleared);
+      send_response(fd, 200, "application/json; charset=utf-8", NULL, msg, strlen(msg)); close(fd); return;
+    }
+    /* allowlist: /api/allow/<ipv4> and /api/unallow/<ipv4>. An allowed address
+     * skips the gate, so this sits behind the same guards as hang up. */
+    if(strncmp(path, "/api/allow/", 11) == 0 || strncmp(path, "/api/unallow/", 13) == 0) {
+      int add = path[5] == 'a';
+      char ip[32]; snprintf(ip, sizeof(ip), "%s", path + (add ? 11 : 13));
+      ip[strcspn(ip, "?")] = 0;
+      int rc = add ? allowlist_add(ip) : allowlist_remove(ip);
+      if(rc == -1) { send_text(fd, 400, "Not an IPv4 address"); close(fd); return; }
+      if(rc == -3) { send_text(fd, 400, "Allowlist is full"); close(fd); return; }
+      if(rc < 0)   { send_text(fd, 500, "Cannot write the allowlist file"); close(fd); return; }
+      if(rc == 0) dashboard_note(add ? "web: %s added to the allowlist" : "web: %s removed from the allowlist", ip);
+      char msg[64]; snprintf(msg, sizeof(msg), "{\"ok\":true,\"changed\":%s}", rc == 0 ? "true" : "false");
       send_response(fd, 200, "application/json; charset=utf-8", NULL, msg, strlen(msg)); close(fd); return;
     }
     send_text(fd, 404, "Not Found"); close(fd); return;

@@ -146,6 +146,7 @@ static void put_right(int row, int col, int color, const char *s, int width) {
 
 static int g_sel_line = -1;      /* line picked with a digit key; -1 = follow the caller */
 static int g_confirm_line = -1;  /* line a pending Y/N question is about */
+static char g_confirm_ip[20];    /* address a pending allow / disallow question is about */
 static int target_line(void);
 
 /* ---- pages ---------------------------------------------------------------- */
@@ -279,12 +280,15 @@ static void draw_events_box(int top, int h) {
   if(n == 0) tui_put(top + 1, 2, TC_DIM, "NOTHING YET");
 }
 
+/* the lists page: blocklist on top, allowlist below */
 static void draw_blocklist_page(int top, int h) {
-  tui_box_c(top, 0, h, W, "BLOCKLIST", TC_REV_BAD);
+  int ah = h / 2; if(ah < 4) ah = h >= 8 ? 4 : 0;
+  int bh = h - ah;
+  tui_box_c(top, 0, bh, W, "BLOCKLIST", TC_REV_BAD);
   block_info_t bl[64];
   int n = blocklist_list_ex(bl, 64);
   tui_put(top + 1, 2, TC_HEAD, "IP               KIND       UNTIL");
-  int rows = h - 3; if(n > rows) n = rows;
+  int rows = bh - 3; if(n > rows) n = rows;
   char b1[32], line[128];
   for(int i = 0; i < n; i++) {
     snprintf(line, sizeof(line), "%-16.16s ", bl[i].ip);
@@ -293,7 +297,16 @@ static void draw_blocklist_page(int top, int h) {
     if(!bl[i].permanent) tui_put(top + 2 + i, 30, TC_VALUE, fmt_clock(bl[i].until, b1, sizeof(b1)));
   }
   if(n == 0) tui_put(top + 2, 2, TC_DIM, "NOTHING BLOCKED");
-  tui_put(top + h - 2, 2, TC_DIM, "U=CLEAR TIMED BLOCKS   S OR ESC=BACK");
+  if(ah) {
+    int at = top + bh;
+    tui_box_c(at, 0, ah, W, "ALLOWLIST", TC_REV);
+    char al[64][16];
+    int m = allowlist_list(al, 64), per = (W - 4) / 17, arows = ah - 3;
+    if(per < 1) per = 1;
+    for(int i = 0; i < m && i / per < arows; i++) tui_put(at + 1 + i / per, 2 + (i % per) * 17, TC_OK, al[i]);
+    if(m == 0) tui_put(at + 1, 2, TC_DIM, "NOBODY ALLOWED YET: THESE ADDRESSES SKIP THE GATE AND THE BLOCKLIST");
+    tui_put(at + ah - 2, 2, TC_DIM, "A=ALLOW THE LATEST CALLER   X=REMOVE THE LAST ENTRY   U=CLEAR TIMED BLOCKS   S OR ESC=BACK");
+  } else tui_put(top + bh - 2, 2, TC_DIM, "U=CLEAR TIMED BLOCKS   S OR ESC=BACK");
 }
 
 static void draw_help_page(int top, int h) {
@@ -302,7 +315,8 @@ static void draw_help_page(int top, int h) {
     "H  HANG UP THE CALLER ON THE MARKED LINE (ASKS Y/N)",
     "R  RESET THE MARKED LINE'S MODEM, LIKE ATZ (ASKS Y/N)",
     "0-7  MARK A LINE FOR H AND R (MULTI-LINE; DEFAULT: THE CALLER)",
-    "B  BLOCKLIST PAGE        U  CLEAR TIMED BLOCKS (ASKS Y/N)",
+    "B  BLOCKLIST + ALLOWLIST PAGE   U  CLEAR TIMED BLOCKS (ASKS Y/N)",
+    "A  ALLOW THE CALLER (OR THE LATEST ONE): SKIPS GATE AND BLOCKLIST",
     "P  PALETTE COLOR / GREEN / AMBER / WHITE",
     "S  BACK TO THE MAIN SCREEN / REPAINT",
     "Q  QUIT TCPSER (ASKS Y/N): HANGS UP CALLERS, SAVES STATS",
@@ -313,7 +327,7 @@ static void draw_help_page(int top, int h) {
     "WARNINGS AND ERRORS FROM THE LOG APPEAR IN THE EVENTS PANE.",
   };
   int n = (int)(sizeof(lines) / sizeof(lines[0]));
-  for(int i = 0; i < n && i < h - 2; i++) tui_put(top + 1 + i, 2, i == 0 || i > 6 ? TC_VALUE : TC_LABEL, lines[i]);
+  for(int i = 0; i < n && i < h - 2; i++) tui_put(top + 1 + i, 2, i == 0 || i > 7 ? TC_VALUE : TC_LABEL, lines[i]);
 }
 
 /* ---- the frame ------------------------------------------------------------- */
@@ -391,8 +405,8 @@ static void render(void) {
   if(g_msg[0] && time(NULL) - g_msg_at > 8 && !g_confirm) g_msg[0] = 0;
   if(g_msg[0]) tui_putn(msg_row, 1, g_confirm ? TC_WARN : TC_VALUE, g_msg, W - 2);
   {
-    static const char *keys_long[][2]  = { {"H", "HANG UP"}, {"R", "RESET"}, {"B", "BLOCKLIST"}, {"U", "UNBLOCK"}, {"P", "PALETTE"}, {"?", "HELP"}, {"Q", "QUIT"} };
-    static const char *keys_short[][2] = { {"H", "HANG"}, {"R", "RESET"}, {"B", "BLOCK"}, {"U", "UNBLK"}, {"P", "PAL"}, {"?", "HELP"}, {"Q", "QUIT"} };
+    static const char *keys_long[][2]  = { {"H", "HANG UP"}, {"R", "RESET"}, {"A", "ALLOW"}, {"B", "LISTS"}, {"U", "UNBLOCK"}, {"P", "PALETTE"}, {"?", "HELP"}, {"Q", "QUIT"} };
+    static const char *keys_short[][2] = { {"H", "HANG"}, {"R", "RESET"}, {"A", "ALLOW"}, {"B", "LIST"}, {"U", "UNBLK"}, {"P", "PAL"}, {"?", "HELP"}, {"Q", "QUIT"} };
     const char *(*keys)[2] = W >= 78 ? keys_long : keys_short;   /* every key stays visible down to 60 columns */
     const char *ph = tui_phosphor();
     int ph_col = W - 1 - (int)strlen(ph), c = 1;
@@ -764,6 +778,14 @@ void dashboard_check_keyboard(void) {
           case 'h': line_msg(g_confirm_line, MSG_HANGUP); set_msg("HANG UP REQUESTED ON LINE %d", g_confirm_line); break;
           case 'r': line_msg(g_confirm_line, MSG_RESET); set_msg("LINE %d: MODEM RESET SENT (ATZ)", g_confirm_line); break;
           case 'u': { int n = blocklist_unblock_all_timed(); set_msg("CLEARED %d TIMED BLOCK(S)", n); break; }
+          case 'a': { int rc = allowlist_add(g_confirm_ip);
+                      if(rc == 0) { set_msg("%s ALLOWED: SKIPS THE GATE FROM NOW ON", g_confirm_ip); dashboard_note("%s added to the allowlist", g_confirm_ip); }
+                      else set_msg(rc == 1 ? "%s IS ALREADY ALLOWED" : rc == -3 ? "ALLOWLIST IS FULL" : "CANNOT WRITE THE ALLOWLIST FILE", g_confirm_ip);
+                      break; }
+          case 'x': { int rc = allowlist_remove(g_confirm_ip);
+                      if(rc == 0) { set_msg("%s REMOVED FROM THE ALLOWLIST", g_confirm_ip); dashboard_note("%s removed from the allowlist", g_confirm_ip); }
+                      else set_msg(rc == 1 ? "%s WAS NOT LISTED" : "CANNOT WRITE THE ALLOWLIST FILE", g_confirm_ip);
+                      break; }
           case 'q': g_quit_requested = 1; return;
         }
       } else set_msg("CANCELLED");
@@ -790,6 +812,28 @@ void dashboard_check_keyboard(void) {
         int t = ch - '0';
         if(g_dash.lines[t].inited) { g_sel_line = (g_sel_line == t) ? -1 : t; if(g_sel_line >= 0) set_msg("LINE %d MARKED FOR H AND R", t); else set_msg("MARK CLEARED: H AND R FOLLOW THE CALLER"); }
         else set_msg("NO LINE %d", t);
+        break; }
+      case 'a': case 'A': {
+        /* the caller on the marked / active line, else whoever called last */
+        int t = target_line();
+        const char *ip = NULL;
+        if(t >= 0 && g_dash.lines[t].connected && g_dash.lines[t].peer_ip[0]) ip = g_dash.lines[t].peer_ip;
+        else if(g_dash.history_count > 0) ip = g_dash.history[(g_dash.history_head - 1 + DASH_HISTORY_LINES) % DASH_HISTORY_LINES].ip;
+        char q[96];
+        if(!ip || !ip[0]) { set_msg("NO CALLER TO ALLOW YET"); break; }
+        if(allowlist_has(ip)) { set_msg("%s IS ALREADY ALLOWED", ip); break; }
+        snprintf(g_confirm_ip, sizeof(g_confirm_ip), "%.19s", ip);
+        snprintf(q, sizeof(q), "ALLOW %s (SKIPS GATE AND BLOCKLIST)", g_confirm_ip);
+        ask_confirm('a', q);
+        break; }
+      case 'x': case 'X': {
+        char al[256][16]; int m = allowlist_list(al, 256);
+        char q[96];
+        if(g_page != PG_BLOCKS) { set_msg("X WORKS ON THE LISTS PAGE (B)"); break; }
+        if(m == 0) { set_msg("THE ALLOWLIST IS EMPTY"); break; }
+        snprintf(g_confirm_ip, sizeof(g_confirm_ip), "%s", al[m - 1]);
+        snprintf(q, sizeof(q), "REMOVE %s FROM THE ALLOWLIST", g_confirm_ip);
+        ask_confirm('x', q);
         break; }
       case 'b': case 'B': g_page = (g_page == PG_BLOCKS) ? PG_MAIN : PG_BLOCKS; tui_invalidate(); break;
       case '?': case '/': g_page = (g_page == PG_HELP) ? PG_MAIN : PG_HELP; tui_invalidate(); break;

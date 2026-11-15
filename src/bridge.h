@@ -25,5 +25,10 @@ int blocklist_list(char buf[][16], int max);
 typedef struct { char ip[16]; int permanent; time_t until; } block_info_t;
 int blocklist_list_ex(block_info_t *out, int max);
 int blocklist_unblock_all_timed(void);
+/* allowlist, editable from the dashboards (the file stays the source of truth) */
+int allowlist_list(char out[][16], int max);
+int allowlist_has(const char *ip);
+int allowlist_add(const char *ip);      /* 0 added, 1 already listed, -1 not an IPv4 address, -2 file error, -3 list full */
+int allowlist_remove(const char *ip);   /* 0 removed, 1 was not listed, -2 file error */
 
 #endif
