@@ -27,25 +27,25 @@
 
 <!-- ===================== F2 STATUS ===================== -->
 <div class="page" data-page="status">
-<section class="scr" aria-labelledby="t-lines">
+<section class="scr" aria-labelledby="t-lines" data-c="tur">
   <h2 class="scrt" id="t-lines"><span class="hi">LINES</span></h2>
   <div class="cols"><pre class="rec hdr" aria-hidden="true">LN DEVICE            SPEED STATE    CALLER           DUR      IN     OUT  DCD DTR</pre>
   <div id="lines"></div></div>
 </section>
 
-<section class="scr" aria-labelledby="t-act">
+<section class="scr" aria-labelledby="t-act" data-c="yel">
   <h2 class="scrt" id="t-act"><span class="hi">ACTIVITY</span> <span class="dim" id="act-sub"></span></h2>
   <div class="charts">
     <div class="chart">
       <div class="chl"><span class="lbl">CALLS 24H</span> <span class="dim num" id="calls-sum"></span></div>
-      <pre class="bars" id="ch-calls" aria-label="calls per hour, last 24 hours"></pre>
+      <pre class="bars calls" id="ch-calls" aria-label="calls per hour, last 24 hours"></pre>
       <pre class="axis" id="ax-hours" aria-hidden="true"></pre>
       <div class="chl"><span class="lbl">GATE FAIL + DROPS</span> <span class="dim num" id="fail-sum"></span></div>
       <pre class="bars bad" id="ch-fail" aria-label="gate failures and drops per hour"></pre>
     </div>
     <div class="chart">
-      <div class="chl"><span class="lbl">TRAFFIC</span> <span class="dim num" id="traf-sum"></span></div>
-      <pre class="bars" id="ch-in" aria-label="bytes from callers per minute"></pre>
+      <div class="chl"><span class="lbl">TRAFFIC</span> <span class="dim num sum" id="traf-sum"></span></div>
+      <pre class="bars inb" id="ch-in" aria-label="bytes from callers per minute"></pre>
       <pre class="bars out" id="ch-out" aria-label="bytes to callers per minute"></pre>
       <pre class="axis" id="ax-min" aria-hidden="true"></pre>
       <div class="legend"><span class="sw in">▮</span> CALLER→BBS <span class="sw outsw">▮</span> BBS→CALLER</div>
@@ -54,22 +54,22 @@
 </section>
 
 <div class="two">
-  <section class="scr" aria-labelledby="t-tot">
+  <section class="scr" aria-labelledby="t-tot" data-c="grn">
     <h2 class="scrt" id="t-tot"><span class="hi">TOTALS</span></h2>
     <dl class="kv">
       <dt>CALLS</dt><dd class="num" id="c-conn">-</dd>
       <dt>GATE PASS</dt><dd class="num ok" id="c-pass">-</dd>
       <dt>GATE FAIL</dt><dd class="num warn" id="c-fail">-</dd>
       <dt>DROPPED</dt><dd class="num bad" id="c-drop" title="blocklist + rate limit">-</dd>
-      <dt>BYTES IN</dt><dd class="num" id="c-in">-</dd>
-      <dt>BYTES OUT</dt><dd class="num" id="c-out">-</dd>
+      <dt>BYTES IN</dt><dd class="num in" id="c-in">-</dd>
+      <dt>BYTES OUT</dt><dd class="num out" id="c-out">-</dd>
       <dt>UPTIME</dt><dd class="num" id="uptime">-</dd>
       <dt>GATE</dt><dd id="gate">-</dd>
-      <dt>LISTEN</dt><dd class="num" id="listen">-</dd>
+      <dt>LISTEN</dt><dd class="num key" id="listen">-</dd>
       <dt>BLOCKED</dt><dd class="num" id="c-blocked">-</dd>
     </dl>
   </section>
-  <section class="scr" aria-labelledby="t-evt0">
+  <section class="scr" aria-labelledby="t-evt0" data-c="pnk">
     <h2 class="scrt" id="t-evt0"><span class="hi">LATEST EVENTS</span></h2>
     <ul class="list" id="events-short"></ul>
     <p class="empty" id="events-short-empty">NOTHING YET</p>
@@ -79,7 +79,7 @@
 
 <!-- ===================== F3 CALLERS ===================== -->
 <div class="page" data-page="callers" hidden>
-<section class="scr tall" aria-labelledby="t-call">
+<section class="scr tall" aria-labelledby="t-call" data-c="tur">
   <h2 class="scrt" id="t-call"><span class="hi">RECENT CALLERS</span> <span class="dim">NEWEST FIRST</span></h2>
   <div class="cols"><pre class="rec hdr" aria-hidden="true">TIME     DATE       CALLER           RESULT        DUR     IN      OUT</pre>
   <div id="callers"></div>
@@ -89,7 +89,7 @@
 
 <!-- ===================== F4 TRAFFIC ===================== -->
 <div class="page" data-page="traffic" hidden>
-<section class="scr tall" aria-labelledby="t-traf">
+<section class="scr tall" aria-labelledby="t-traf" data-c="pnk">
   <h2 class="scrt" id="t-traf"><span class="hi">LIVE TRAFFIC</span>
     <span class="opts" role="group" aria-label="traffic view">
       <button class="opt on" data-mode="petscii" type="button">PETSCII</button>
@@ -107,18 +107,18 @@
 <!-- ===================== F6 SECURITY ===================== -->
 <div class="page" data-page="security" hidden>
 <div class="two">
-  <section class="scr" aria-labelledby="t-blk">
+  <section class="scr" aria-labelledby="t-blk" data-c="red">
     <h2 class="scrt" id="t-blk"><span class="hi">BLOCKLIST</span> <span class="dim num" id="block-count"></span></h2>
     <ul class="list tall" id="blocklist"></ul>
     <p class="empty" id="block-empty">NOTHING BLOCKED</p>
   </section>
-  <section class="scr" aria-labelledby="t-evt">
+  <section class="scr" aria-labelledby="t-evt" data-c="pnk">
     <h2 class="scrt" id="t-evt"><span class="hi">EVENTS</span></h2>
     <ul class="list tall" id="events"></ul>
     <p class="empty" id="events-empty">NOTHING YET</p>
   </section>
 </div>
-<section class="scr" aria-labelledby="t-gate">
+<section class="scr" aria-labelledby="t-gate" data-c="yel">
   <h2 class="scrt" id="t-gate"><span class="hi">GATE</span></h2>
   <dl class="kv">
     <dt>MODE</dt><dd id="g-mode">-</dd>
@@ -139,7 +139,7 @@
 <div class="msgline" id="msg" role="status" aria-live="polite"></div>
 <footer class="fkeys" id="fkeys">
   <button type="button" data-f="F5">F5=Refresh</button>
-  <button type="button" data-f="F7">F7=Phosphor</button>
+  <button type="button" data-f="F7">F7=Palette</button>
   <button type="button" data-f="F8">F8=Hang up</button>
   <button type="button" data-f="F9">F9=Unblock</button>
   <button type="button" data-f="F10">F10=Metrics</button>

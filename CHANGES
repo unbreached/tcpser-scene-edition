@@ -374,3 +374,13 @@
   Linux build: clean on gcc and clang (x86-64, arm64, 32-bit, musl); the musl
     build failed on a missing <sys/select.h>. GitHub Actions now builds and
     tests every push on those targets and on macOS, warnings count as errors
+1.4.3
+  COLOUR:   both dashboards use the full 5250 colour display by default:
+            green labels, white values, turquoise headings, yellow keys,
+            blue frames, pink and red accents; each panel has its own title
+            colour, counters and events take the colour of what happened,
+            and the web traffic view shows text in the C64 ink that the
+            PETSCII colour codes select. The one-colour phosphors (green,
+            amber, white) remain: F7 in the web console, P in the terminal
+            dashboard, --phosphor color|green|amber|white
+  BUILD:    see the Linux build note above (musl fix, gcc warnings, CI)

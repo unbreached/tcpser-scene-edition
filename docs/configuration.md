@@ -135,7 +135,7 @@ speed  = 38400
 | `TCPSER_DASH_TRAFFIC` | `--web-traffic` | `1` = payload bytes in the traffic feed | off |
 | `TCPSER_DASH_NAME` | `--name` | BBS name in the web console | `TCPSER` |
 | `TCPSER_IP232_BIND` | `--ip232-bind` | bind address of the `-v` listener | `127.0.0.1` |
-| `TCPSER_TUI_PHOSPHOR` | `--phosphor` | terminal dashboard colour | `green` |
+| `TCPSER_TUI_PHOSPHOR` | `--phosphor` | terminal dashboard palette (`color`, `green`, `amber`, `white`) | `color` |
 | `TCPSER_TUI_ASCII` | `--ascii` | ASCII glyphs in the terminal dashboard | off |
 | `NO_COLOR` | | monochrome terminal dashboard | |
 | `TCPSER_PEER_IP` | | set *by* tcpser for the `-E` hook: the caller's IP | |
@@ -226,7 +226,7 @@ speed  = 38400
 | `--web-traffic` | `web-traffic` | Include payload content in the web traffic feed (callers' keystrokes; keep it behind a token). Also `TCPSER_DASH_TRAFFIC`. |
 | `--name NAME` | `name` | BBS name shown in the web console header. Also `TCPSER_DASH_NAME`. |
 | `-e`, `--webhook URL` | `webhook` | Webhook URL for connection events (Discord, Slack, ntfy or plain JSON POST). Repeatable, up to 8. |
-| `--phosphor green\|amber\|white` | `phosphor` | Terminal dashboard phosphor (`green`, `amber` or `white`). Also `TCPSER_TUI_PHOSPHOR`. |
+| `--phosphor color\|green\|amber\|white` | `phosphor` | Terminal dashboard palette: `color` (default, the 5250 colour display) or the one-colour phosphors `green`, `amber`, `white`. Also `TCPSER_TUI_PHOSPHOR`. |
 | `--ascii` | `ascii` | Draw the terminal dashboard with ASCII glyphs even in a UTF-8 locale. Also `TCPSER_TUI_ASCII`. |
 
 **Files**

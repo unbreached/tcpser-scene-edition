@@ -170,7 +170,7 @@ mixed-case one.
 
 **Terminal** (`-M`): a 5250-style full-screen monitor on stderr. Works over SSH
 on a Pi. Hotkeys: `H` hang up, `R` reset, `B` blocklist, `U` unblock, `P`
-phosphor, `?` help, `Q` quit. It adapts from 60×16 up; add `-L tcpser.log` so
+palette, `?` help, `Q` quit. It adapts from 60×16 up; add `-L tcpser.log` so
 logging goes to a file instead of fighting the screen.
 
 ```bash

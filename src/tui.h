@@ -12,7 +12,8 @@
  *   the locale is not UTF-8.
  * - Output goes to stderr with O_NONBLOCK: a terminal that stops draining
  *   (frozen SSH) costs us one dropped frame, not a stalled accept loop.
- * - Three phosphors (green / amber / white) like the web console.
+ * - Four palettes like the web console: colour (the 5250 colour display,
+ *   default) and the green / amber / white phosphors.
  */
 
 enum {
@@ -27,8 +28,14 @@ enum {
   TC_BAD,
   TC_ACCENT,    /* "turquoise": carrier, caller->BBS */
   TC_ACCENT2,   /* "pink": BBS->caller */
-  TC_REV,       /* reverse video in the title colour (hotkey letters, prompts) */
-  TC_COUNT
+  TC_REV,       /* reverse video in the title colour (panel titles, prompts) */
+  TC_HEAD,      /* column headings */
+  TC_KEY,       /* hotkey letters, the clock */
+  TC_INFO,      /* "blue": secondary values such as timestamps */
+  TC_COUNT,
+  /* reverse-video panel titles in another role's colour; on the one-colour
+   * phosphors they all fall back to TC_REV */
+  TC_REV_ACCENT = TC_COUNT, TC_REV_ACCENT2, TC_REV_WARN, TC_REV_BAD, TC_REV_INFO
 };
 
 enum { G_HL, G_VL, G_TL, G_TR, G_BL, G_BR, G_LT, G_RT, G_DOT_ON, G_DOT_OFF, G_ARROW_R, G_ARROW_L, G_COUNT };
@@ -36,7 +43,7 @@ enum { G_HL, G_VL, G_TL, G_TR, G_BL, G_BR, G_LT, G_RT, G_DOT_ON, G_DOT_OFF, G_AR
 int  tui_init(void);                      /* detect caps, take stderr non-blocking, hide cursor */
 void tui_shutdown(void);                  /* restore stderr flags, show cursor, reset attributes */
 int  tui_active(void);
-void tui_set_phosphor(const char *name);  /* "green" | "amber" | "white" */
+void tui_set_phosphor(const char *name);  /* "color" | "green" | "amber" | "white" */
 const char *tui_phosphor(void);
 const char *tui_next_phosphor(void);
 int  tui_is_utf8(void);
@@ -50,6 +57,7 @@ void tui_putn(int row, int col, int color, const char *utf8, int maxcols); /* at
 void tui_fill(int row, int col, int n, int color, const char *glyph);
 void tui_hrule(int row, int col, int n);
 void tui_box(int top, int left, int h, int w, const char *title);          /* frame with " TITLE " inlaid reverse */
+void tui_box_c(int top, int left, int h, int w, const char *title, int title_color);  /* same, title in TC_REV_* */
 int  tui_flush(void);                     /* 0 = frame written, -1 = dropped (terminal not draining) */
 void tui_invalidate(void);                /* force a full repaint on the next flush */
 

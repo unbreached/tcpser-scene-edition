@@ -1,5 +1,5 @@
 .\"                                      Hey, EMACS: -*- nroff -*-
-.TH TCPSER 1 "November 2026" "tcpser 1.4.2"
+.TH TCPSER 1 "November 2026" "tcpser 1.4.3"
 .SH NAME
 tcpser \- Hayes compatible modem emulator over TCP/IP
 .SH SYNOPSIS
@@ -173,8 +173,8 @@ BBS name shown in the web console header. Also the environment variable \fBTCPSE
 \fB\-e\fP, \fB\-\-webhook\fP \fIURL\fP
 Webhook URL for connection events (Discord, Slack, ntfy or plain JSON POST). Repeatable, up to 8.
 .TP
-\fB\-\-phosphor\fP \fIgreen|amber|white\fP
-Terminal dashboard phosphor (\fBgreen\fP, \fBamber\fP or \fBwhite\fP). Also the environment variable \fBTCPSER_TUI_PHOSPHOR\fP.
+\fB\-\-phosphor\fP \fIcolor|green|amber|white\fP
+Terminal dashboard palette: \fBcolor\fP (default, the 5250 colour display) or the one\-colour phosphors \fBgreen\fP, \fBamber\fP, \fBwhite\fP. Also the environment variable \fBTCPSER_TUI_PHOSPHOR\fP.
 .TP
 \fB\-\-ascii\fP
 Draw the terminal dashboard with ASCII glyphs even in a UTF\-8 locale. Also the environment variable \fBTCPSER_TUI_ASCII\fP.

@@ -25,7 +25,7 @@ static int g_utf8 = 1;
 static int g_tier = 256;
 static int g_full = 1;           /* next flush repaints everything */
 static int g_saved_flags = -1;
-static char g_phos[8] = "green";
+static char g_phos[8] = "color";
 
 /* ---- output buffer (one write per frame) ---------------------------------- */
 static char g_out[MAXW * MAXH * 16];
@@ -40,26 +40,35 @@ static const char *GL_ASCII[G_COUNT] = { "-", "|", "+", "+", "+", "+", "+", "+",
 const char *tui_glyph(int which) { if(which < 0 || which >= G_COUNT) return "?"; return g_utf8 ? GL_UTF8[which] : GL_ASCII[which]; }
 
 /* ---- palettes ---------------------------------------------------------- */
-/* 256-colour index per role, per phosphor */
-static const int PAL256[3][TC_COUNT] = {
-  /* green */ { 0, 28, 46, 40, 231, 28, 46, 220, 203, 51, 213, 46 },
-  /* amber */ { 0, 130, 214, 214, 230, 94, 214, 226, 203, 222, 217, 214 },
-  /* white */ { 0, 245, 252, 252, 231, 240, 120, 220, 203, 117, 218, 252 },
+/* Palette 0 is the colour display: green labels, white values, turquoise
+ * headings, yellow keys, blue frames, pink and red accents (the seven 5250
+ * colours). The other three are one-colour phosphors. */
+#define NPAL 4
+static const char *PAL_NAME[NPAL] = { "color", "green", "amber", "white" };
+/* 256-colour index per role, per palette */
+static const int PAL256[NPAL][TC_COUNT] = {
+  /*            def frame title label value dim  ok  warn bad  acc  acc2 rev  head key  info */
+  /* color */ { 0,  25,   84,   78,   231,  67,  84, 220, 203, 51,  213, 84,  80,  220, 75 },
+  /* green */ { 0,  28,   46,   40,   231,  28,  46, 220, 203, 51,  213, 46,  28,  231, 28 },
+  /* amber */ { 0,  130,  214,  214,  230,  94,  214, 226, 203, 222, 217, 214, 94,  230, 94 },
+  /* white */ { 0,  245,  252,  252,  231,  240, 120, 220, 203, 117, 218, 252, 240, 231, 240 },
 };
-/* 16-colour SGR codes per role, per phosphor (30-37 normal, 90-97 bright) */
-static const int PAL16[3][TC_COUNT] = {
-  { 39, 32, 92, 92, 97, 32, 92, 93, 91, 96, 95, 92 },
-  { 39, 33, 93, 93, 97, 33, 93, 93, 91, 93, 95, 93 },
-  { 39, 37, 97, 97, 97, 90, 92, 93, 91, 96, 95, 97 },
+/* 16-colour SGR codes per role, per palette (30-37 normal, 90-97 bright) */
+static const int PAL16[NPAL][TC_COUNT] = {
+  { 39, 34, 92, 32, 97, 90, 92, 93, 91, 96, 95, 92, 36, 93, 94 },
+  { 39, 32, 92, 92, 97, 32, 92, 93, 91, 96, 95, 92, 32, 97, 32 },
+  { 39, 33, 93, 93, 97, 33, 93, 93, 91, 93, 95, 93, 33, 97, 33 },
+  { 39, 37, 97, 97, 97, 90, 92, 93, 91, 96, 95, 97, 90, 97, 90 },
 };
-static int phos_idx(void) { return strcmp(g_phos, "amber") == 0 ? 1 : strcmp(g_phos, "white") == 0 ? 2 : 0; }
+static int phos_idx(void) { for(int i = 0; i < NPAL; i++) if(strcmp(g_phos, PAL_NAME[i]) == 0) return i; return 0; }
 
 void tui_set_phosphor(const char *name) {
   if(!name) return;
-  if(strcmp(name, "amber") == 0 || strcmp(name, "white") == 0 || strcmp(name, "green") == 0) { snprintf(g_phos, sizeof(g_phos), "%s", name); g_full = 1; }
+  if(strcmp(name, "colour") == 0) name = "color";
+  for(int i = 0; i < NPAL; i++) if(strcmp(name, PAL_NAME[i]) == 0) { snprintf(g_phos, sizeof(g_phos), "%s", name); g_full = 1; }
 }
 const char *tui_phosphor(void) { return g_phos; }
-const char *tui_next_phosphor(void) { int i = (phos_idx() + 1) % 3; tui_set_phosphor(i == 0 ? "green" : i == 1 ? "amber" : "white"); return g_phos; }
+const char *tui_next_phosphor(void) { tui_set_phosphor(PAL_NAME[(phos_idx() + 1) % NPAL]); return g_phos; }
 int tui_is_utf8(void) { return g_utf8; }
 int tui_color_tier(void) { return g_tier; }
 int tui_active(void) { return g_active; }
@@ -68,20 +77,26 @@ static void sgr_for(int color) {
   /* reset first so attributes never leak between cells */
   outs("\033[0m");
   if(color == TC_DEFAULT) return;
-  int p = phos_idx();
+  int p = phos_idx(), rev = 0;
+  if(color >= TC_COUNT) {            /* coloured reverse titles; one colour on the phosphors */
+    static const int base[] = { TC_ACCENT, TC_ACCENT2, TC_WARN, TC_BAD, TC_INFO };
+    int i = color - TC_COUNT;
+    color = (p == 0 && i < (int)(sizeof(base) / sizeof(base[0]))) ? base[i] : TC_TITLE;
+    rev = 1;
+  } else if(color == TC_REV) { color = TC_TITLE; rev = 1; }
   if(g_tier == 256) {
-    if(color == TC_REV) { outf("\033[7;38;5;%dm", PAL256[p][TC_TITLE], 0); return; }
+    if(rev) { outf("\033[7;38;5;%dm", PAL256[p][color], 0); return; }
     outf("\033[38;5;%dm", PAL256[p][color], 0);
-    if(color == TC_VALUE || color == TC_TITLE) outs("\033[1m");
+    if(color == TC_VALUE || color == TC_TITLE || color == TC_KEY) outs("\033[1m");
   } else if(g_tier == 16) {
-    if(color == TC_REV) { outf("\033[7;%dm", PAL16[p][TC_TITLE], 0); return; }
+    if(rev) { outf("\033[7;%dm", PAL16[p][color], 0); return; }
     outf("\033[%dm", PAL16[p][color], 0);
-    if(color == TC_VALUE || color == TC_TITLE) outs("\033[1m");
+    if(color == TC_VALUE || color == TC_TITLE || color == TC_KEY) outs("\033[1m");
   } else {
+    if(rev) { outs("\033[7m"); return; }
     switch(color) {
-      case TC_REV: outs("\033[7m"); break;
-      case TC_VALUE: case TC_TITLE: case TC_OK: case TC_ACCENT: outs("\033[1m"); break;
-      case TC_DIM: case TC_FRAME: outs("\033[2m"); break;
+      case TC_VALUE: case TC_TITLE: case TC_OK: case TC_ACCENT: case TC_KEY: outs("\033[1m"); break;
+      case TC_DIM: case TC_FRAME: case TC_HEAD: case TC_INFO: outs("\033[2m"); break;
       case TC_BAD: case TC_WARN: outs("\033[1;4m"); break;
       default: break;
     }
@@ -164,7 +179,8 @@ void tui_fill(int row, int col, int n, int color, const char *glyph) {
 }
 void tui_hrule(int row, int col, int n) { tui_fill(row, col, n, TC_FRAME, tui_glyph(G_HL)); }
 
-void tui_box(int top, int left, int h, int w, const char *title) {
+void tui_box(int top, int left, int h, int w, const char *title) { tui_box_c(top, left, h, w, title, TC_REV); }
+void tui_box_c(int top, int left, int h, int w, const char *title, int title_color) {
   if(h < 2 || w < 2) return;
   tui_putn(top, left, TC_FRAME, tui_glyph(G_TL), 1);
   tui_hrule(top, left + 1, w - 2);
@@ -175,7 +191,7 @@ void tui_box(int top, int left, int h, int w, const char *title) {
   tui_putn(top + h - 1, left + w - 1, TC_FRAME, tui_glyph(G_BR), 1);
   if(title && *title) {
     char t[80]; snprintf(t, sizeof(t), " %s ", title);
-    tui_putn(top, left + 2, TC_REV, t, w - 4);
+    tui_putn(top, left + 2, title_color, t, w - 4);
   }
 }
 

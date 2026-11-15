@@ -8,7 +8,7 @@
 
 <p align="center">
   <a href="LICENSE"><img alt="License: GPL-2.0" src="https://img.shields.io/badge/license-GPL--2.0-blue"></a>
-  <img alt="Version 1.4.2" src="https://img.shields.io/badge/version-1.4.2-ff2bd6">
+  <img alt="Version 1.4.3" src="https://img.shields.io/badge/version-1.4.3-ff2bd6">
   <img alt="Language: C" src="https://img.shields.io/badge/language-C-29f6ff">
   <img alt="Platforms" src="https://img.shields.io/badge/runs%20on-Linux%20%7C%20Raspberry%20Pi%20%7C%20macOS%20%7C%20BSD-26ff8f">
   <img alt="Hardware" src="https://img.shields.io/badge/C64-SwiftLink%20%7C%20Turbo232%20%7C%20GLINK232%20%7C%20userport-ffb020">
@@ -153,7 +153,9 @@ per refresh on a quiet screen, and a frozen SSH session can never stall the
 modem. Adapts from 60×16 up (traffic takes every spare row); resize any time.
 Colours follow the terminal (256 / 16 / mono, `NO_COLOR` honoured); glyphs
 fall back to ASCII outside UTF-8 locales or with `TCPSER_TUI_ASCII=1`;
-`TCPSER_TUI_PHOSPHOR=green|amber|white` picks the phosphor. Destructive
+`P` (or `TCPSER_TUI_PHOSPHOR=color|green|amber|white`) picks the palette:
+the 5250 colour display by default (green labels, white values, turquoise
+headings, yellow keys, pink and red accents), or a one-colour phosphor. Destructive
 hotkeys ask `y/N`.
 
 | Key | Action |
@@ -163,7 +165,7 @@ hotkeys ask `y/N`.
 | `0`–`7` | Mark a line for `H` and `R` on a multi-line BBS (default: the line with a caller) |
 | `B` | Blocklist page |
 | `U` | Clear all timed blocks |
-| `P` | Phosphor green / amber / white |
+| `P` | Palette: colour / green / amber / white |
 | `?` | Help page |
 | `S` / `Esc` | Back to the main screen / repaint |
 | `Q` | Quit (hangs up callers, saves stats) |
@@ -178,7 +180,7 @@ bytes in and out per minute for 60 min), totals, recent callers, a live
 traffic feed with PETSCII / ASCII / hex views, the blocklist and system
 events, updated every 2 s over Server-Sent Events. Four screens, like a
 terminal menu: F2 Status, F3 Callers, F4 Traffic, F6 Security (keys 1–4 work
-too). Function keys: F5 refresh, F7 phosphor (green / amber / white), F8 hang
+too). Function keys: F5 refresh, F7 palette (colour / green / amber / white), F8 hang
 up, F9 clear timed blocks, F12 exit, with Y/N confirmation on the message
 line. Name it with `TCPSER_DASH_NAME="My BBS"`.
 
@@ -455,7 +457,7 @@ The tables below are generated from the binary (`make docs`).
 | `--web-traffic` | `web-traffic` | Include payload content in the web traffic feed (callers' keystrokes; keep it behind a token). Also `TCPSER_DASH_TRAFFIC`. |
 | `--name NAME` | `name` | BBS name shown in the web console header. Also `TCPSER_DASH_NAME`. |
 | `-e`, `--webhook URL` | `webhook` | Webhook URL for connection events (Discord, Slack, ntfy or plain JSON POST). Repeatable, up to 8. |
-| `--phosphor green\|amber\|white` | `phosphor` | Terminal dashboard phosphor (`green`, `amber` or `white`). Also `TCPSER_TUI_PHOSPHOR`. |
+| `--phosphor color\|green\|amber\|white` | `phosphor` | Terminal dashboard palette: `color` (default, the 5250 colour display) or the one-colour phosphors `green`, `amber`, `white`. Also `TCPSER_TUI_PHOSPHOR`. |
 | `--ascii` | `ascii` | Draw the terminal dashboard with ASCII glyphs even in a UTF-8 locale. Also `TCPSER_TUI_ASCII`. |
 
 **Files**
@@ -483,7 +485,7 @@ The tables below are generated from the binary (`make docs`).
 | `TCPSER_DASH_TRAFFIC` | `1` = include payload bytes in the traffic feed | off |
 | `TCPSER_DASH_NAME` | BBS name shown in the dashboard header | `TCPSER` |
 | `TCPSER_IP232_BIND` | bind address of the `-v` listener | `127.0.0.1` |
-| `TCPSER_TUI_PHOSPHOR` | terminal dashboard phosphor `green`/`amber`/`white` | `green` |
+| `TCPSER_TUI_PHOSPHOR` | terminal dashboard palette `color`/`green`/`amber`/`white` | `color` |
 | `TCPSER_TUI_ASCII` | `1` = ASCII glyphs in the terminal dashboard | off |
 
 Each has a long option / config key (`--blocklist`, `--web-bind`, `--web-token`, `--web-traffic`,

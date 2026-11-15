@@ -105,8 +105,8 @@ const opt_desc OPTS[] = {
   { LO_NAME, "name", OPT_ARG, "NAME", G_MON, "BBS name shown in the web console", "BBS name shown in the web console header.", "TCPSER_DASH_NAME", 0 },
   { 'e', "webhook", OPT_ARG, "URL", G_MON, "webhook (Discord/Slack/ntfy/JSON POST; repeatable)",
     "Webhook URL for connection events (Discord, Slack, ntfy or plain JSON POST). Repeatable, up to 8.", NULL, 0 },
-  { LO_PHOSPHOR, "phosphor", OPT_ARG, "green|amber|white", G_MON, "terminal dashboard phosphor",
-    "Terminal dashboard phosphor (`green`, `amber` or `white`).", "TCPSER_TUI_PHOSPHOR", 0 },
+  { LO_PHOSPHOR, "phosphor", OPT_ARG, "color|green|amber|white", G_MON, "terminal dashboard palette",
+    "Terminal dashboard palette: `color` (default, the 5250 colour display) or the one-colour phosphors `green`, `amber`, `white`.", "TCPSER_TUI_PHOSPHOR", 0 },
   { LO_ASCII, "ascii", OPT_FLAG, NULL, G_MON, "ASCII box glyphs in the terminal dashboard",
     "Draw the terminal dashboard with ASCII glyphs even in a UTF-8 locale.", "TCPSER_TUI_ASCII", 0 },
 

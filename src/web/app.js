@@ -22,10 +22,10 @@
   let mode = "petscii", paused = false, lastData = null, frozen = null, pendingAsk = null, es = null, page = "status";
 
   // ---- per-browser preferences (phosphor, screen) -------------------------
-  const PHOS = ["green", "amber", "white"];
+  const PHOS = ["color", "green", "amber", "white"];   // "color" = the 5250 colour display (default)
   function pref(k, v) { try { if (v === undefined) return localStorage.getItem("tcpser." + k); localStorage.setItem("tcpser." + k, v); } catch (e) { return null; } return null; }
-  function setPhosphor(p, save) { document.documentElement.setAttribute("data-phosphor", p); if (save) pref("phosphor", p); }
-  { const p = pref("phosphor"); if (PHOS.includes(p)) setPhosphor(p, false); }
+  function setPhosphor(p, save) { document.documentElement.setAttribute("data-phosphor", p); if (save) pref("palette", p); }
+  { const p = pref("palette"); if (PHOS.includes(p)) setPhosphor(p, false); }
 
   // ---- screens -----------------------------------------------------------
   function showPage(p, save) {
@@ -50,14 +50,16 @@
   const GFX = { 0xa0: " ", 0xa6: "▒", 0xa7: "▕", 0xa9: "◤", 0xac: "▗", 0xad: "└", 0xae: "┐", 0xaf: "▂", 0xb0: "┌", 0xb1: "┴", 0xb2: "┬", 0xb3: "┤", 0xb4: "▎",
     0xb5: "▍", 0xb6: "▌", 0xb7: "▔", 0xb8: "▁", 0xb9: "▃", 0xba: "✓", 0xbb: "▖", 0xbc: "▝", 0xbd: "┘", 0xbe: "▘", 0xbf: "▚", 0xc0: "─", 0xdb: "┼", 0xdd: "│",
     0xde: "π", 0xdf: "◥", 0xa1: "▌", 0xa2: "▄", 0xa3: "▔", 0xa4: "▁", 0xa5: "▏", 0xa8: "▇", 0xaa: "▉", 0xab: "├" };
+  const INK = { 0x05: "wht", 0x1c: "red", 0x1e: "grn", 0x1f: "blu", 0x81: "org", 0x90: "blk", 0x95: "brn", 0x96: "lrd", 0x97: "gr1", 0x98: "gr2", 0x99: "lgn", 0x9a: "lbl", 0x9b: "gr3", 0x9c: "pur", 0x9e: "yel", 0x9f: "cyn" };
   const b64 = (s) => { const bin = atob(s); const a = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) a[i] = bin.charCodeAt(i); return a; };
   function renderBytes(bytes, into) {
     into.textContent = "";
     if (mode === "hex") { into.textContent = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join(" "); return; }
-    let run = ""; const flush = () => { if (run) { into.appendChild(document.createTextNode(run)); run = ""; } };
+    // text after a PETSCII colour code is shown in that colour, as the C64 would
+    let run = "", ink = ""; const flush = () => { if (run) { into.appendChild(ink ? span("pc-" + ink, run) : document.createTextNode(run)); run = ""; } };
     for (const b of bytes) {
       if (mode === "ascii") { const c = b & 0x7f; run += (c >= 0x20 && c < 0x7f) ? String.fromCharCode(c) : "."; continue; }
-      if (CTL[b] !== undefined) { flush(); const s = document.createElement("span"); s.className = "ctl"; s.textContent = "⟨" + CTL[b] + "⟩"; into.appendChild(s); continue; }
+      if (CTL[b] !== undefined) { flush(); if (INK[b]) ink = INK[b]; const s = document.createElement("span"); s.className = "ctl" + (INK[b] ? " pc-" + INK[b] : ""); s.textContent = "⟨" + CTL[b] + "⟩"; into.appendChild(s); continue; }
       if (b >= 0x20 && b <= 0x5a) run += String.fromCharCode(b);
       else if (b >= 0x61 && b <= 0x7a) run += String.fromCharCode(b - 0x20);
       else if (b >= 0xc1 && b <= 0xda) run += String.fromCharCode(b - 0x80);
@@ -99,7 +101,7 @@
     bars($("ch-out"), mOut, { label: (i) => (win - 1 - i) + " min ago", fmt: fmtBytes });
     $("ax-min").textContent = narrow ? "-30m      -20       -10       now" : "-60m      -50       -40       -30       -20       -10       now";
     const tIn = s.min_in.reduce((a, b) => a + b, 0), tOut = s.min_out.reduce((a, b) => a + b, 0);
-    $("traf-sum").textContent = `${win} MIN  ↓${fmtBytes(tIn)} ↑${fmtBytes(tOut)}`;
+    { const t = $("traf-sum"); t.textContent = `${win} MIN  `; t.append(span("dn", "↓" + fmtBytes(tIn)), " ", span("up", "↑" + fmtBytes(tOut))); }
     $("act-sub").textContent = "AS OF " + timeOf(d.now) + " " + dateOf(d.now);
   }
 
@@ -112,7 +114,7 @@
       pre.append(pad(l.id, 2, true) + " " + pad(l.device, 17) + " " + pad(l.speed, 5, true) + " ");
       pre.append(span(l.state === "connected" ? "st-on" : "st-off", pad(l.state === "connected" ? "CARRIER" : "IDLE", 8)));
       pre.append(" " + pad(l.state === "connected" ? l.peer : "", 16) + " " + pad(l.state === "connected" ? fmtDur(l.session_s) : "", 5, true) + " ");
-      pre.append(pad(l.state === "connected" ? fmtBytes(l.bytes_in) : "", 6, true) + " " + pad(l.state === "connected" ? fmtBytes(l.bytes_out) : "", 7, true) + "  ");
+      pre.append(span("in", pad(l.state === "connected" ? fmtBytes(l.bytes_in) : "", 6, true)), " ", span("out", pad(l.state === "connected" ? fmtBytes(l.bytes_out) : "", 7, true)), "  ");
       pre.append(span(l.dcd ? "led" : "led-off", l.dcd ? "●" : "○"), "   ", span(l.dtr ? "led" : "led-off", l.dtr ? "●" : "○"));
       if (l.state === "connected") {
         pre.append("  ");
@@ -128,9 +130,9 @@
     const host = $("callers"); host.textContent = ""; $("callers-empty").hidden = hist.length > 0;
     hist.forEach((h) => {
       const pre = document.createElement("pre"); pre.className = "rec";
-      pre.append(pad(timeOf(h.time), 8) + " " + pad(dateOf(h.time), 10) + " " + pad(h.ip, 16) + " ");
+      pre.append(span("t", pad(timeOf(h.time), 8) + " " + pad(dateOf(h.time), 10)), " " + pad(h.ip, 16) + " ");
       pre.append(span("res-" + h.result, pad(h.result.replace("_", " "), 13)));
-      pre.append(" " + pad(h.duration ? fmtDur(h.duration) : "", 5, true) + " " + pad(h.bytes_in ? fmtBytes(h.bytes_in) : "", 6, true) + " " + pad(h.bytes_out ? fmtBytes(h.bytes_out) : "", 7, true));
+      pre.append(" " + pad(h.duration ? fmtDur(h.duration) : "", 5, true) + " ", span("in", pad(h.bytes_in ? fmtBytes(h.bytes_in) : "", 6, true)), " ", span("out", pad(h.bytes_out ? fmtBytes(h.bytes_out) : "", 7, true)));
       host.appendChild(pre);
     });
   }
@@ -152,10 +154,13 @@
     bl.forEach((b) => { const li = document.createElement("li"); li.append(span("ip", b.ip), span("kind " + b.kind, b.kind === "permanent" ? "PERMANENT" : "TIMED, UNTIL " + timeOf(b.expires))); ul.appendChild(li); });
     $("c-blocked").textContent = bl.length;
   }
+  // an event line takes the colour of what happened: red for blocks and floods,
+  // yellow for failures and hang-ups by the operator, green for calls that got through
+  function evClass(t) { t = t.toLowerCase(); return /block|flood|rate|denied|refused|error/.test(t) ? "ev-bad" : /warn|fail|timeout|hang|reset|not reading|dropped/.test(t) ? "ev-warn" : /connect|pass|answer|unblock|cleared|listening/.test(t) ? "ev-ok" : "ev"; }
   function renderEvents(ev) {
     [["events", "events-empty", ev], ["events-short", "events-short-empty", ev.slice(0, 5)]].forEach(([id, emptyId, list]) => {
       const ul = $(id); ul.textContent = ""; $(emptyId).hidden = list.length > 0;
-      list.forEach((e) => { const li = document.createElement("li"); li.append(span("time num", timeOf(e.time)), span("", e.text.toUpperCase())); ul.appendChild(li); });
+      list.forEach((e) => { const li = document.createElement("li"); li.append(span("time num", timeOf(e.time)), span(evClass(e.text), e.text.toUpperCase())); ul.appendChild(li); });
     });
   }
   function render(d) {
@@ -208,7 +213,7 @@
   function fkey(k) {
     if (PAGE_KEYS[k]) { showPage(PAGE_KEYS[k], true); msg(""); return; }
     if (k === "F5") { msg("REFRESHED"); refresh(); return; }
-    if (k === "F7") { const cur = document.documentElement.getAttribute("data-phosphor") || "green"; const next = PHOS[(PHOS.indexOf(cur) + 1) % PHOS.length]; setPhosphor(next, true); msg("PHOSPHOR: " + next.toUpperCase()); return; }
+    if (k === "F7") { const cur = document.documentElement.getAttribute("data-phosphor") || "color"; const next = PHOS[(PHOS.indexOf(cur) + 1) % PHOS.length]; setPhosphor(next, true); msg("PALETTE: " + next.toUpperCase()); return; }
     if (k === "F8") { const l = lastData && lastData.lines.find((x) => x.state === "connected"); if (!l) { msg("NO CALLER ONLINE", "err"); return; } ask(`HANG UP LINE ${l.id} (${l.peer})?`, () => act(`/api/line/${l.id}/hangup`, `LINE ${l.id} HUNG UP`)); return; }
     if (k === "F9") { if (!lastData || !lastData.blocklist.some((b) => b.kind === "timed")) { msg("NO TIMED BLOCKS", "err"); return; } ask("CLEAR ALL TIMED BLOCKS?", () => act("/api/unblock", "TIMED BLOCKS CLEARED")); return; }
     if (k === "F10") { if (!window.__TCPSER_SNAPSHOT__) location.href = "/metrics"; else msg("SNAPSHOT: NO METRICS ENDPOINT", "err"); return; }
