@@ -168,9 +168,10 @@ mixed-case one.
 
 ## 7. Watch it: dashboards
 
-**Terminal** (`-M`): a 5250-style full-screen monitor on stderr. Works over SSH
-on a Pi. Hotkeys: `H` hang up, `R` reset, `B` blocklist, `U` unblock, `P`
-palette, `?` help, `Q` quit. It adapts from 60×16 up; add `-L tcpser.log` so
+**Terminal** (`-M`): a full-screen operations screen on stderr (counters, a live
+data-flow diagram, graphs, lines, traffic, callers, events). Works over SSH
+on a Pi. Hotkeys: `H` hang up, `R` reset, `A` allow the caller, `G` graphs,
+`B` blocklist and allowlist, `U` unblock, `P` palette, `?` help, `Q` quit. It adapts from 60×16 up; add `-L tcpser.log` so
 logging goes to a file instead of fighting the screen.
 
 ```bash

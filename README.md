@@ -144,26 +144,30 @@ level shifter. No libraries beyond libc and pthreads.
 <tr>
 <td width="50%" valign="top">
 
-**Terminal (`-M`)** — runs on stderr, over SSH, on a Pi. The same 5250 idiom
-as the web console: system line, status strip, a LINES subfile (device, speed,
-carrier, caller, duration, bytes, DCD/DTR), live hex + text traffic in both
-directions, recent callers, and an EVENTS pane that receives the log's
-warnings and errors. Drawn on a diffed cell buffer: no flicker, a few bytes
-per refresh on a quiet screen, and a frozen SSH session can never stall the
-modem. Adapts from 60×16 up (traffic takes every spare row); resize any time.
-Colours follow the terminal (256 / 16 / mono, `NO_COLOR` honoured); glyphs
-fall back to ASCII outside UTF-8 locales or with `TCPSER_TUI_ASCII=1`;
-`P` (or `TCPSER_TUI_PHOSPHOR=color|green|amber|white`) picks the palette:
-the 5250 colour display by default (green labels, white values, turquoise
-headings, yellow keys, pink and red accents), or a one-colour phosphor. Destructive
-hotkeys ask `y/N`.
+**Terminal (`-M`)** — a small operations wall for the gateway, on stderr,
+over SSH, on a Pi. From the top: system line with an ON AIR lamp, counter
+tiles, a **DATA FLOW** diagram (callers → shield → gate → modem → C64) whose
+arrows move while bytes do and whose stages flash on a drop or a failed gate,
+a throughput graph (bytes per second, last minute) beside calls per hour
+(24 h), the LINES table, live hex + text traffic, recent callers and the
+EVENTS pane. `G` opens a full-screen graphs page (throughput, traffic per
+minute, calls, top sources); `B` the blocklist and allowlist. Drawn on a
+diffed cell buffer: no flicker, a few bytes per refresh on a quiet screen,
+and a frozen SSH session can never stall the modem. Adapts from 60×16 up: a
+taller or wider terminal shows more panels, a small one keeps lines and
+traffic. Colours follow the terminal (256 / 16 / mono, `NO_COLOR` honoured);
+glyphs fall back to ASCII outside UTF-8 locales or with `TCPSER_TUI_ASCII=1`;
+`P` (or `TCPSER_TUI_PHOSPHOR=color|green|amber|white`) picks the palette.
+Destructive hotkeys ask `y/N`.
 
 | Key | Action |
 |-----|--------|
 | `H` | Hang up the caller on the marked line |
 | `R` | Reset the marked line's modem (same as `ATZ`) |
 | `0`–`7` | Mark a line for `H` and `R` on a multi-line BBS (default: the line with a caller) |
-| `B` | Blocklist page |
+| `A` | Allow the caller (or the latest one): skips gate, rate limit and blocklist |
+| `G` | Graphs page |
+| `B` | Blocklist + allowlist page (`X` there removes the last allowlist entry) |
 | `U` | Clear all timed blocks |
 | `P` | Palette: colour / green / amber / white |
 | `?` | Help page |
@@ -200,7 +204,10 @@ in `src/web/` and is embedded into the binary at build time.
 </table>
 
 <p align="center">
-  <img src="docs/img/terminal-dashboard.png" alt="tcpser terminal dashboard: link status, statistics, hex traffic and connection history" width="900">
+  <img src="docs/img/terminal-dashboard.png" alt="tcpser terminal dashboard: counters, data flow diagram, throughput and call graphs, lines, hex traffic, recent callers, events" width="900">
+</p>
+<p align="center">
+  <img src="docs/img/terminal-graphs.png" alt="tcpser terminal dashboard, graphs page: throughput per second, traffic per minute, calls per hour, top sources" width="900">
 </p>
 <p align="center">
   <img src="docs/img/web-traffic.png" alt="web console, Traffic screen: live PETSCII traffic feed" width="900">

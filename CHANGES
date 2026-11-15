@@ -389,3 +389,10 @@
             with an input field and REMOVE buttons (POST /api/allow/<ip>,
             /api/unallow/<ip>); terminal dashboard: A allows the caller,
             B shows both lists, X removes the last entry
+  MONITOR:  the -M terminal dashboard is redesigned as an operations screen:
+            ON AIR lamp, counter tiles, an animated DATA FLOW diagram
+            (callers > shield > gate > modem > C64; stages flash on a drop
+            or a failed gate), throughput per second and calls per hour
+            graphs, traffic / callers / events side by side on a wide
+            terminal, and a graphs page (G) with traffic per minute and top
+            sources. Scales from 60x16 up; allowlisted addresses show green

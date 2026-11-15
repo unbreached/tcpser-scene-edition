@@ -86,7 +86,7 @@ static void term_raw_on(void);
 void term_restore(void);
 
 /* ---- UI state (protected by dash_mutex like everything else) ----------- */
-enum { PG_MAIN = 0, PG_BLOCKS, PG_HELP };
+enum { PG_MAIN = 0, PG_BLOCKS, PG_HELP, PG_GRAPHS };
 static int g_page = PG_MAIN;
 static char g_msg[128] = "";
 static time_t g_msg_at = 0;
@@ -149,7 +149,313 @@ static int g_confirm_line = -1;  /* line a pending Y/N question is about */
 static char g_confirm_ip[20];    /* address a pending allow / disallow question is about */
 static int target_line(void);
 
-/* ---- pages ---------------------------------------------------------------- */
+/* ---- pages ----------------------------------------------------------------
+ * The main screen is a small network operations wall for one BBS gateway:
+ *
+ *   system line     name, ON AIR lamp, clock
+ *   counters        tiles (tall screens) or one strip
+ *   DATA FLOW       callers > shield > gate > modem > C64, arrows move while
+ *                   bytes do; a drop or a failed gate flashes its stage
+ *   graphs          bytes per second (60 s) and calls per hour (24 h)
+ *   LINES           one row per modem line
+ *   TRAFFIC / RECENT CALLERS / EVENTS   side by side on a wide screen
+ *
+ * Every block is sized from the terminal, from 60x16 up; what does not fit is
+ * dropped from the least important end and stays reachable on its own page
+ * (G graphs, B lists). */
+static const char *U(const char *utf8, const char *ascii) { return tui_is_utf8() ? utf8 : ascii; }
+static int anim_phase(void) { struct timeval t; gettimeofday(&t, NULL); return (int)(((long)t.tv_sec * 4 + t.tv_usec / 250000) & 0x3fffffff); }
+/* text clipped to a box: never past column `right` (exclusive) */
+static void put_clip(int row, int col, int color, const char *s, int right) { if(right > col) tui_putn(row, col, color, s, right - col); }
+static void put_center(int row, int left, int width, int color, const char *s) {
+  int n = cells_of(s); if(n > width) n = width;
+  tui_putn(row, left + (width - n) / 2, color, s, width);
+}
+static int lines_online(int *total) {
+  int on = 0, n = 0;
+  for(int i = 0; i < DASH_MAX_LINES; i++) if(g_dash.lines[i].inited) { n++; if(g_dash.lines[i].connected) on++; }
+  if(total) *total = n;
+  return on;
+}
+
+/* ---- counters -------------------------------------------------------------- */
+typedef struct { const char *label; char val[24]; int color; } kpi_t;
+#define NKPI 8
+static void build_kpis(kpi_t *k) {
+  int nblk = blocklist_count();
+  k[0] = (kpi_t){ "UPTIME", "", TC_VALUE };   fmt_uptime(g_dash.start_time, k[0].val, sizeof(k[0].val));
+  k[1] = (kpi_t){ "CALLS", "", TC_VALUE };    snprintf(k[1].val, sizeof(k[1].val), "%lu", g_dash.total_connections);
+  k[2] = (kpi_t){ "PASS", "", g_dash.gate_pass ? TC_OK : TC_VALUE };   snprintf(k[2].val, sizeof(k[2].val), "%lu", g_dash.gate_pass);
+  k[3] = (kpi_t){ "FAIL", "", g_dash.gate_fail ? TC_WARN : TC_VALUE }; snprintf(k[3].val, sizeof(k[3].val), "%lu", g_dash.gate_fail);
+  k[4] = (kpi_t){ "DROP", "", g_dash.blocked ? TC_BAD : TC_VALUE };    snprintf(k[4].val, sizeof(k[4].val), "%lu", g_dash.blocked);
+  k[5] = (kpi_t){ "BLOCKED", "", nblk ? TC_BAD : TC_VALUE };           snprintf(k[5].val, sizeof(k[5].val), "%d", nblk);
+  k[6] = (kpi_t){ "RX", "", TC_ACCENT };      fmt_bytes(g_dash.bytes_in, k[6].val, sizeof(k[6].val));
+  k[7] = (kpi_t){ "TX", "", TC_ACCENT2 };     fmt_bytes(g_dash.bytes_out, k[7].val, sizeof(k[7].val));
+}
+static void draw_kpi_strip(int row) {
+  kpi_t k[NKPI]; build_kpis(k);
+  int c = 1;
+  for(int i = 0; i < NKPI; i++) {
+    int need = (int)strlen(k[i].label) + 1 + (int)strlen(k[i].val);
+    if(c + need > W - 1) break;
+    tui_put(row, c, TC_LABEL, k[i].label); c += (int)strlen(k[i].label) + 1;
+    tui_put(row, c, k[i].color, k[i].val); c += (int)strlen(k[i].val) + 2;
+  }
+}
+static void draw_kpi_tiles(int top) {
+  kpi_t k[NKPI]; build_kpis(k);
+  int tw = W / NKPI;
+  for(int i = 0; i < NKPI; i++) {
+    int left = i * tw, w = (i == NKPI - 1) ? W - left : tw;
+    char t[24]; snprintf(t, sizeof(t), " %s ", k[i].label);
+    tui_box(top, left, 3, w, NULL);
+    put_clip(top, left + 2, TC_HEAD, t, left + w - 1);
+    put_clip(top + 1, left + 2, k[i].color, k[i].val, left + w - 1);
+  }
+}
+
+/* ---- data flow ------------------------------------------------------------- */
+typedef struct { const char *title; char detail[24]; char status[40]; int frame; int scolor; } flow_node_t;
+#define NFLOW 5
+static void build_flow(flow_node_t *n, time_t now) {
+  int total = 0, on = lines_online(&total);
+  int nblk = blocklist_count();
+  const char *gate = "OPEN";
+  const char *dev = "-"; const char *peer = ""; int speed = 0, dtr = 0;
+  for(int i = 0; i < DASH_MAX_LINES; i++) {
+    dash_line_t *l = &g_dash.lines[i];
+    if(!l->inited) continue;
+    if(dev[0] == '-') {
+      dev = l->device; speed = l->speed;
+      modem_config *c = (modem_config *)l->cfg;
+      if(c) gate = c->gate_mode == 1 ? "BACKSPACE" : c->gate_mode == 2 ? "PASSWORD" : "OPEN";
+    }
+    if(l->dtr) dtr = 1;
+    if(l->connected && !peer[0]) { peer = l->peer_ip; dev = l->device; speed = l->speed; }
+  }
+  int attempt = now - g_dash.last_attempt <= 2, drop = now - g_dash.last_drop <= 3;
+  int gfail = now - g_dash.last_gate_fail <= 3, gpass = now - g_dash.last_gate_pass <= 3;
+
+  n[0] = (flow_node_t){ "CALLERS", "", "", on || attempt ? TC_ACCENT : TC_FRAME, TC_VALUE };
+  snprintf(n[0].detail, sizeof(n[0].detail), "TCP :%d", g_dash.port);
+  snprintf(n[0].status, sizeof(n[0].status), "%lu CALLS", g_dash.total_connections);
+
+  n[1] = (flow_node_t){ "SHIELD", "", "", drop ? TC_BAD : TC_FRAME, g_dash.blocked ? TC_BAD : TC_DIM };
+  snprintf(n[1].detail, sizeof(n[1].detail), "%d BLOCKED", nblk);
+  snprintf(n[1].status, sizeof(n[1].status), "%lu DROPPED", g_dash.blocked);
+
+  n[2] = (flow_node_t){ "GATE", "", "", gfail ? TC_WARN : gpass ? TC_OK : TC_FRAME, g_dash.gate_fail ? TC_WARN : TC_OK };
+  snprintf(n[2].detail, sizeof(n[2].detail), "%s", gate);
+  snprintf(n[2].status, sizeof(n[2].status), "%lu PASS %lu FAIL", g_dash.gate_pass, g_dash.gate_fail);
+
+  n[3] = (flow_node_t){ "MODEM", "", "", on ? TC_ACCENT : TC_FRAME, on ? TC_ACCENT : TC_DIM };
+  snprintf(n[3].detail, sizeof(n[3].detail), "%d/%d ONLINE", on, total);
+  snprintf(n[3].status, sizeof(n[3].status), "%s", on ? (peer[0] ? peer : "CARRIER") : "IDLE");
+
+  n[4] = (flow_node_t){ "C64 BBS", "", "", on ? TC_ACCENT : dtr ? TC_OK : TC_FRAME, dtr ? TC_OK : TC_DIM };
+  snprintf(n[4].detail, sizeof(n[4].detail), "%.14s", dev);
+  snprintf(n[4].status, sizeof(n[4].status), "%d BAUD DTR %s", speed, tui_glyph(dtr ? G_DOT_ON : G_DOT_OFF));
+}
+/* one run of arrows between two stages. dir > 0: towards the BBS */
+static void flow_arrows(int row, int col, int n, int dir, int active, int carrier, int phase) {
+  for(int x = 0; x < n; x++) {
+    if(active) {
+      int lit = dir > 0 ? ((x - phase) % 4 + 4) % 4 == 0 : (x + phase) % 4 == 0;
+      tui_putn(row, col + x, lit ? TC_VALUE : (dir > 0 ? TC_ACCENT : TC_ACCENT2), dir > 0 ? U("\xe2\x80\xba", ">") : U("\xe2\x80\xb9", "<"), 1);
+    } else tui_putn(row, col + x, carrier ? TC_DIM : TC_FRAME, carrier ? tui_glyph(G_HL) : U("\xc2\xb7", "."), 1);
+  }
+}
+static void draw_flow(int top, int h) {
+  time_t now = time(NULL);
+  flow_node_t n[NFLOW]; build_flow(n, now);
+  int phase = anim_phase(), carrier = lines_online(NULL) > 0;
+  int rx = carrier && now - g_dash.last_caller_rx <= 1, tx = carrier && now - g_dash.last_caller_tx <= 1;
+  int knock = now - g_dash.last_attempt <= 2;      /* someone is at the door */
+  tui_box_c(top, 0, h, W, "DATA FLOW", TC_REV_INFO);
+  {
+    const char *lamp = rx && tx ? "RX+TX" : rx ? "RX" : tx ? "TX" : carrier ? "CARRIER" : knock ? "INCOMING" : "QUIET";
+    char t[24]; snprintf(t, sizeof(t), " %s ", lamp);
+    tui_put(top, W - 3 - (int)strlen(t), rx || tx ? TC_VALUE : carrier ? TC_ACCENT : knock ? TC_WARN : TC_DIM, t);
+  }
+  int inner = W - 4;
+  int nw = W >= 118 ? 16 : W >= 96 ? 14 : W >= 78 ? 12 : 10;
+  int gw = (inner - NFLOW * nw) / (NFLOW - 1); if(gw > 12) gw = 12; if(gw < 1) gw = 1;
+  int x0 = 2 + (inner - (NFLOW * nw + (NFLOW - 1) * gw)) / 2;
+  if(h >= 7) {
+    for(int i = 0; i < NFLOW; i++) {
+      int x = x0 + i * (nw + gw), f = n[i].frame;
+      tui_putn(top + 1, x, f, U("\xe2\x95\x94", "+"), 1); tui_fill(top + 1, x + 1, nw - 2, f, U("\xe2\x95\x90", "=")); tui_putn(top + 1, x + nw - 1, f, U("\xe2\x95\x97", "+"), 1);
+      tui_putn(top + 4, x, f, U("\xe2\x95\x9a", "+"), 1); tui_fill(top + 4, x + 1, nw - 2, f, U("\xe2\x95\x90", "=")); tui_putn(top + 4, x + nw - 1, f, U("\xe2\x95\x9d", "+"), 1);
+      for(int r = 2; r <= 3; r++) { tui_putn(top + r, x, f, U("\xe2\x95\x91", "|"), 1); tui_putn(top + r, x + nw - 1, f, U("\xe2\x95\x91", "|"), 1); }
+      put_center(top + 2, x + 1, nw - 2, f == TC_FRAME ? TC_HEAD : f, n[i].title);
+      put_center(top + 3, x + 1, nw - 2, TC_VALUE, n[i].detail);
+      put_center(top + 5, i == 0 ? x : i == NFLOW - 1 ? x - gw : x - gw / 2, nw + gw, n[i].scolor, n[i].status);
+      if(i < NFLOW - 1) {
+        int before_gate = i < 2;
+        flow_arrows(top + 2, x + nw, gw, +1, rx || (before_gate && knock), carrier, phase);
+        flow_arrows(top + 3, x + nw, gw, -1, tx, carrier, phase);
+      }
+    }
+  } else {
+    for(int i = 0; i < NFLOW; i++) {
+      int x = x0 + i * (nw + gw), f = n[i].frame;
+      put_center(top + 1, x, nw, f == TC_FRAME ? TC_HEAD : f, n[i].title);
+      if(h >= 4) put_center(top + 2, i == 0 ? x : i == NFLOW - 1 ? x - gw + 1 : x - gw / 2, nw + gw - 1, n[i].scolor, i == 4 ? n[i].detail : n[i].status);
+      if(i < NFLOW - 1) {
+        int before_gate = i < 2;
+        if(tx && !(rx && (phase & 4))) flow_arrows(top + 1, x + nw, gw, -1, 1, carrier, phase);
+        else flow_arrows(top + 1, x + nw, gw, +1, rx || (before_gate && knock), carrier, phase);
+      }
+    }
+  }
+}
+
+/* ---- graphs ---------------------------------------------------------------- */
+static const char *bar_up(int eighths) {
+  static const char *g[9] = { " ", "\xe2\x96\x81", "\xe2\x96\x82", "\xe2\x96\x83", "\xe2\x96\x84", "\xe2\x96\x85", "\xe2\x96\x86", "\xe2\x96\x87", "\xe2\x96\x88" };
+  if(eighths < 0) eighths = 0;
+  if(eighths > 8) eighths = 8;
+  if(!tui_is_utf8()) return eighths >= 5 ? "#" : eighths >= 1 ? "." : " ";
+  return g[eighths];
+}
+static const char *bar_down(int eighths) {
+  if(eighths <= 0) return " ";
+  if(!tui_is_utf8()) return eighths >= 5 ? "#" : "'";
+  return eighths >= 5 ? "\xe2\x96\x88" : "\xe2\x96\x80";
+}
+/* one bar, `colw` cells wide, growing up from `base` (rows above it) or down */
+static void vbar(int base, int col, int colw, int rows, unsigned long v, unsigned long max, int color, int down) {
+  if(rows < 1 || max == 0) return;
+  long level = (long)((double)v * rows * 8 / (double)max + 0.5);
+  if(v > 0 && level < 1) level = 1;
+  for(int r = 0; r < rows; r++) {
+    int e = (int)(level - (long)r * 8);
+    if(e <= 0) break;
+    for(int x = 0; x < colw; x++) tui_putn(down ? base + r : base - r, col + x, color, down ? bar_down(e) : bar_up(e), 1);
+  }
+}
+/* mirrored chart: `in` grows up from the middle, `out` grows down. n values, oldest first. */
+static void draw_mirror(int top, int left, int h, int w, const char *title, const unsigned long *in, const unsigned long *out, int n, const char *unit, const char *span) {
+  if(h < 4 || w < 16) return;
+  tui_box_c(top, left, h, w, title, TC_REV_ACCENT);
+  int rows = h - 2, up = (rows + 1) / 2, dn = rows - up;
+  /* a wide box stretches the series over its whole width; a narrow one shows the newest part */
+  int inner = w - 4, cols = inner, first = inner >= n ? 0 : n - inner;
+  /* each half has its own scale, so a quiet direction is still readable next to a busy one */
+  unsigned long max_in = 1, max_out = 1, cur_in = in[n - 1], cur_out = out[n - 1], peak = 0;
+  for(int i = first; i < n; i++) { if(in[i] > max_in) max_in = in[i]; if(out[i] > max_out) max_out = out[i]; if(in[i] + out[i] > peak) peak = in[i] + out[i]; }
+  int mid = top + up;                       /* last row of the upper half */
+  for(int c = 0; c < cols; c++) {
+    int v = inner >= n ? c * n / inner : first + c, col = left + 2 + c;
+    vbar(mid, col, 1, up, in[v], max_in, TC_ACCENT, 0);
+    if(dn > 0) vbar(mid + 1, col, 1, dn, out[v], max_out, TC_ACCENT2, 1);
+    if(in[v] == 0) tui_putn(mid, col, TC_FRAME, U("\xc2\xb7", "."), 1);   /* baseline */
+  }
+  /* figures set into the frame: current values on top, scale and span below */
+  char b1[32], b2[32], t[96];
+  snprintf(t, sizeof(t), " RX %s%s ", fmt_bytes(cur_in, b1, sizeof(b1)), unit);
+  int c = left + w - 2 - (int)strlen(t);
+  snprintf(b2, sizeof(b2), " TX %s%s ", fmt_bytes(cur_out, b1, sizeof(b1)), unit);
+  c -= (int)strlen(b2);
+  if(c > left + 4 + (int)strlen(title)) { tui_put(top, c, TC_ACCENT, t); tui_put(top, c + (int)strlen(t), TC_ACCENT2, b2); }
+  snprintf(t, sizeof(t), " %s  PEAK %s%s ", span, fmt_bytes(peak, b1, sizeof(b1)), unit);
+  if((int)strlen(t) < w - 4) tui_put(top + h - 1, left + w - 2 - (int)strlen(t), TC_DIM, t);
+}
+static void series_seconds(unsigned long *in, unsigned long *out, int n) {
+  time_t now = time(NULL);
+  for(int i = 0; i < n; i++) {
+    time_t t = now - (n - 1 - i); int s = (int)(t % 60);
+    int ok = g_dash.sec_stamp[s] == t;
+    in[i] = ok ? g_dash.sec_in[s] : 0; out[i] = ok ? g_dash.sec_out[s] : 0;
+  }
+}
+static void series_minutes(unsigned long *in, unsigned long *out, int n) {
+  long now = (long)(time(NULL) / 60);
+  for(int i = 0; i < n; i++) {
+    long p = now - (n - 1 - i); int m = (int)(p % 60);
+    int ok = g_dash.min_stamp[m] == p;
+    in[i] = ok ? g_dash.min_in[m] : 0; out[i] = ok ? g_dash.min_out[m] : 0;
+  }
+}
+static void draw_throughput(int top, int left, int h, int w) {
+  unsigned long in[60], out[60]; series_seconds(in, out, 60);
+  draw_mirror(top, left, h, w, "THROUGHPUT", in, out, 60, "/S", "LAST 60 S");
+}
+static void draw_minutes(int top, int left, int h, int w) {
+  unsigned long in[60], out[60]; series_minutes(in, out, 60);
+  draw_mirror(top, left, h, w, "TRAFFIC", in, out, 60, "/MIN", "LAST 60 MIN");
+}
+/* calls per hour, the failures and drops of the same hour beside them */
+static void draw_calls24(int top, int left, int h, int w) {
+  if(h < 4 || w < 30) return;
+  tui_box_c(top, left, h, w, "CALLS 24 H", TC_REV_WARN);
+  long hp = (long)(time(NULL) / 3600);
+  unsigned calls[24], fails[24], max = 1, sc = 0, sf = 0;
+  for(int i = 0; i < 24; i++) {
+    long p = hp - (23 - i); int hh = (int)(p % 24); int ok = g_dash.hour_stamp[hh] == p;
+    calls[i] = ok ? g_dash.hour_calls[hh] : 0; fails[i] = ok ? g_dash.hour_fail[hh] : 0;
+    if(calls[i] > max) max = calls[i];
+    if(fails[i] > max) max = fails[i];
+    sc += calls[i]; sf += fails[i];
+  }
+  int inner = w - 4, bw = inner / 24; if(bw > 5) bw = 5; if(bw < 1) bw = 1;
+  int rows = h - 3, x0 = left + 2 + (inner - 24 * bw) / 2, base = top + rows;
+  struct tm tmb; time_t now = time(NULL); localtime_r(&now, &tmb);
+  for(int i = 0; i < 24; i++) {
+    int col = x0 + i * bw, cw = bw >= 2 ? bw - 1 : 1;
+    int half = bw >= 3 ? (cw + 1) / 2 : cw;
+    vbar(base, col, half, rows, calls[i], max, TC_ACCENT, 0);
+    if(bw >= 3) vbar(base, col + half, cw - half, rows, fails[i], max, TC_BAD, 0);
+    else if(fails[i] > calls[i]) vbar(base, col, half, rows, fails[i], max, TC_BAD, 0);
+    if(calls[i] == 0 && fails[i] == 0) tui_putn(base, col, TC_FRAME, U("\xc2\xb7", "."), 1);
+    if(i % 6 == 5 || (i == 0 && bw >= 2)) {
+      char lb[8]; snprintf(lb, sizeof(lb), "%02d", ((tmb.tm_hour - (23 - i)) % 24 + 24) % 24);
+      if(bw >= 2 || i % 6 == 5) put_clip(base + 1, col, TC_DIM, lb, left + w - 1);
+    }
+  }
+  char t[64]; snprintf(t, sizeof(t), " %u CALLS ", sc);
+  char f[32]; snprintf(f, sizeof(f), " %u FAIL/DROP ", sf);
+  int c = left + w - 2 - (int)strlen(t) - (int)strlen(f);
+  if(c > left + 16) { tui_put(top, c, TC_ACCENT, t); tui_put(top, c + (int)strlen(t), sf ? TC_BAD : TC_DIM, f); }
+}
+/* who calls most: the recent history folded by address */
+static void draw_sources(int top, int left, int h, int w) {
+  if(h < 4 || w < 30) return;
+  tui_box_c(top, left, h, w, "TOP SOURCES", TC_REV_BAD);
+  struct { char ip[20]; int n, bad, ok; } s[DASH_HISTORY_LINES]; int ns = 0;
+  int cnt = g_dash.history_count < DASH_HISTORY_LINES ? g_dash.history_count : DASH_HISTORY_LINES;
+  for(int r = 0; r < cnt; r++) {
+    dash_history_entry_t *e = &g_dash.history[(g_dash.history_head - 1 - r + DASH_HISTORY_LINES) % DASH_HISTORY_LINES];
+    int k = 0; for(; k < ns; k++) if(strncmp(s[k].ip, e->ip, sizeof(s[k].ip) - 1) == 0) break;
+    if(k == ns) { snprintf(s[ns].ip, sizeof(s[ns].ip), "%.19s", e->ip); s[ns].n = s[ns].bad = s[ns].ok = 0; ns++; }
+    s[k].n++; if(e->result >= 2) s[k].ok++; else s[k].bad++;
+  }
+  for(int a = 0; a < ns; a++) for(int b = a + 1; b < ns; b++) if(s[b].n > s[a].n) { __typeof__(s[0]) t = s[a]; s[a] = s[b]; s[b] = t; }
+  tui_put(top + 1, left + 2, TC_HEAD, "ADDRESS          CALLS");
+  int rows = h - 3, max = ns ? s[0].n : 1, barw = w - 4 - 27; if(barw < 0) barw = 0;
+  for(int i = 0; i < ns && i < rows; i++) {
+    char line[48]; int row = top + 2 + i, col = s[i].ok == 0 ? TC_BAD : s[i].bad ? TC_WARN : TC_OK;
+    snprintf(line, sizeof(line), "%-16.16s", s[i].ip); put_clip(row, left + 2, allowlist_has(s[i].ip) ? TC_OK : TC_VALUE, line, left + w - 1);
+    snprintf(line, sizeof(line), "%4d", s[i].n); put_clip(row, left + 19, col, line, left + w - 1);
+    int len = barw * s[i].n / max; if(len < 1 && barw > 0) len = 1;
+    tui_fill(row, left + 25, len, col, U("\xe2\x96\x88", "#"));
+  }
+  if(ns == 0) tui_put(top + 2, left + 2, TC_DIM, "NO CALLS YET");
+}
+static void draw_graph_row(int top, int h) {
+  int lw = W / 2;
+  draw_throughput(top, 0, h, lw);
+  draw_calls24(top, lw, h, W - lw);
+}
+static void draw_graphs_page(int top, int h) {
+  int a = h / 3, c = h - 2 * a, lw = W * 58 / 100;
+  draw_throughput(top, 0, a, W);
+  draw_minutes(top + a, 0, a, W);
+  if(W >= 100) { draw_calls24(top + 2 * a, 0, c, lw); draw_sources(top + 2 * a, lw, c, W - lw); }
+  else draw_calls24(top + 2 * a, 0, c, W);
+}
+
+/* ---- lines ----------------------------------------------------------------- */
 static void draw_lines_box(int top, int *next) {
   int n = 0;
   for(int i = 0; i < DASH_MAX_LINES; i++) if(g_dash.lines[i].inited) n++;
@@ -175,7 +481,7 @@ static void draw_lines_box(int top, int *next) {
     snprintf(line, sizeof(line), "%5d", l->speed); tui_put(r, X + C_SPD, TC_VALUE, line);
     put_padded(r, X + C_ST, l->connected ? TC_ACCENT : TC_DIM, l->connected ? "CARRIER" : "IDLE", 8);
     if(l->connected) {
-      put_padded(r, X + C_CALL, TC_VALUE, l->peer_ip, 16);
+      put_padded(r, X + C_CALL, allowlist_has(l->peer_ip) ? TC_OK : TC_VALUE, l->peer_ip, 16);
       put_right(r, X + C_DUR, TC_VALUE, fmt_dur((int)(time(NULL) - l->session_start), b1, sizeof(b1)), 5);
       put_right(r, X + C_IN, TC_ACCENT, fmt_bytes(l->bytes_in, b1, sizeof(b1)), 6);
       put_right(r, X + C_OUT, TC_ACCENT2, fmt_bytes(l->bytes_out, b1, sizeof(b1)), 7);
@@ -188,15 +494,16 @@ static void draw_lines_box(int top, int *next) {
   *next = top + h;
 }
 
-static void draw_traffic_box(int top, int h) {
+/* ---- traffic, callers, events (each fits the box it is given) ------------- */
+static void draw_traffic_box(int top, int left, int h, int w) {
   if(h < 3) return;
-  tui_box_c(top, 0, h, W, "TRAFFIC", TC_REV_ACCENT2);
+  tui_box_c(top, left, h, w, "TRAFFIC", TC_REV_ACCENT2);
   int rows = h - 3;
   int dir_w = 11, size_w = 5;
-  int avail = W - 2 - dir_w - 1 - size_w - 4;     /* borders, dir, gap, size, separators */
+  int avail = w - 2 - dir_w - 1 - size_w - 4;     /* borders, dir, gap, size, separators */
   int hex_bytes = avail / 4; if(hex_bytes > 32) hex_bytes = 32; if(hex_bytes < 4) hex_bytes = 4;
   int hex_w = hex_bytes * 3 - 1, txt_w = hex_bytes;
-  int col_dir = 2, col_hex = col_dir + dir_w + 1, col_txt = col_hex + hex_w + 2, col_size = W - 2 - size_w;
+  int col_dir = left + 2, col_hex = col_dir + dir_w + 1, col_txt = col_hex + hex_w + 2, col_size = left + w - 2 - size_w;
   tui_put(top + 1, col_dir, TC_HEAD, "DIRECTION");
   tui_put(top + 1, col_hex, TC_HEAD, "HEX");
   tui_put(top + 1, col_txt, TC_HEAD, "TEXT");
@@ -219,13 +526,14 @@ static void draw_traffic_box(int top, int h) {
     char sz[16]; snprintf(sz, sizeof(sz), "%d", t->bytes);
     put_right(row, col_size, TC_DIM, sz, size_w);
   }
-  if(show == 0) tui_put(top + 2, 2, TC_DIM, "NO TRAFFIC YET");
+  if(show == 0) tui_put(top + 2, left + 2, TC_DIM, "NO TRAFFIC YET");
 }
 
-static void draw_callers_box(int top, int h) {
+static void draw_callers_box(int top, int left, int h, int w) {
   if(h < 3) return;
-  tui_box_c(top, 0, h, W, "RECENT CALLERS", TC_REV);
-  tui_put(top + 1, 2, TC_HEAD, "TIME     CALLER           RESULT     DUR      IN     OUT");
+  int right = left + w - 1;
+  tui_box_c(top, left, h, w, "RECENT CALLERS", TC_REV);
+  put_clip(top + 1, left + 2, TC_HEAD, "TIME     CALLER           RESULT     DUR      IN     OUT", right);
   int rows = h - 3;
   int hshow = g_dash.history_count < DASH_HISTORY_LINES ? g_dash.history_count : DASH_HISTORY_LINES;
   if(hshow > rows) hshow = rows;
@@ -234,17 +542,20 @@ static void draw_callers_box(int top, int h) {
     int idx = (g_dash.history_head - 1 - r + DASH_HISTORY_LINES) % DASH_HISTORY_LINES;   /* newest first */
     dash_history_entry_t *e = &g_dash.history[idx];
     int row = top + 2 + r;
-    tui_put(row, 2, TC_INFO, fmt_clock(e->connect_time, b1, sizeof(b1)));
+    put_clip(row, left + 2, TC_INFO, fmt_clock(e->connect_time, b1, sizeof(b1)), right);
     snprintf(line, sizeof(line), "%-16.16s", e->ip);
-    tui_put(row, 11, TC_VALUE, line);
-    put_padded(row, 28, result_color(e->result), result_str(e->result), 10);
+    put_clip(row, left + 11, allowlist_has(e->ip) ? TC_OK : TC_VALUE, line, right);
+    snprintf(line, sizeof(line), "%-10s", result_str(e->result));
+    put_clip(row, left + 28, result_color(e->result), line, right);
     if(e->result >= 2) {
-      snprintf(line, sizeof(line), "%5s %6s %7s", fmt_dur(e->duration, b1, sizeof(b1)),
-               fmt_bytes((unsigned long)e->bytes_in, b2, sizeof(b2)), fmt_bytes((unsigned long)e->bytes_out, b3, sizeof(b3)));
-      tui_put(row, 39, TC_VALUE, line);
+      put_clip(row, left + 39, TC_VALUE, fmt_dur(e->duration, b1, sizeof(b1)), right);
+      snprintf(line, sizeof(line), "%6s", fmt_bytes((unsigned long)e->bytes_in, b2, sizeof(b2)));
+      put_clip(row, left + 45, TC_ACCENT, line, right);
+      snprintf(line, sizeof(line), "%7s", fmt_bytes((unsigned long)e->bytes_out, b3, sizeof(b3)));
+      put_clip(row, left + 52, TC_ACCENT2, line, right);
     }
   }
-  if(hshow == 0) tui_put(top + 2, 2, TC_DIM, "NO CALLS YET");
+  if(hshow == 0) put_clip(top + 2, left + 2, TC_DIM, "NO CALLS YET", right);
 }
 
 /* an event takes the colour of what happened: red for blocks and floods,
@@ -257,27 +568,27 @@ static int has_word(const char *s, const char *w) {
 static int event_color(const char *t) {
   static const char *bad[] = { "block", "flood", "rate", "denied", "refused", "error" };
   static const char *warn[] = { "warn", "fail", "timeout", "hang", "reset", "not reading", "dropped" };
-  static const char *ok[] = { "connect", "pass", "answer", "unblock", "cleared", "listening" };
+  static const char *ok[] = { "connect", "pass", "answer", "unblock", "cleared", "listening", "allowlist" };
   for(unsigned i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) if(has_word(t, bad[i])) return TC_BAD;
   for(unsigned i = 0; i < sizeof(warn) / sizeof(warn[0]); i++) if(has_word(t, warn[i])) return TC_WARN;
   for(unsigned i = 0; i < sizeof(ok) / sizeof(ok[0]); i++) if(has_word(t, ok[i])) return TC_OK;
   return TC_VALUE;
 }
 
-static void draw_events_box(int top, int h) {
+static void draw_events_box(int top, int left, int h, int w) {
   if(h < 3) return;
-  tui_box_c(top, 0, h, W, "EVENTS", TC_REV_WARN);
+  int right = left + w - 1;
+  tui_box_c(top, left, h, w, "EVENTS", TC_REV_WARN);
   int rows = h - 2;
   int n = g_dash.events_count < DASH_EVENTS ? g_dash.events_count : DASH_EVENTS;
   if(n > rows) n = rows;
-  char b1[32], line[200];
+  char b1[32];
   for(int i = 0; i < n; i++) {
     int idx = (g_dash.events_head - 1 - i + DASH_EVENTS) % DASH_EVENTS;
-    snprintf(line, sizeof(line), "%s ", fmt_clock(g_dash.events[idx].when, b1, sizeof(b1)));
-    tui_put(top + 1 + i, 2, TC_INFO, line);
-    put_padded(top + 1 + i, 11, event_color(g_dash.events[idx].text), g_dash.events[idx].text, W - 13);
+    put_clip(top + 1 + i, left + 2, TC_INFO, fmt_clock(g_dash.events[idx].when, b1, sizeof(b1)), right);
+    put_clip(top + 1 + i, left + 11, event_color(g_dash.events[idx].text), g_dash.events[idx].text, right - 1);
   }
-  if(n == 0) tui_put(top + 1, 2, TC_DIM, "NOTHING YET");
+  if(n == 0) put_clip(top + 1, left + 2, TC_DIM, "NOTHING YET", right);
 }
 
 /* the lists page: blocklist on top, allowlist below */
@@ -304,8 +615,8 @@ static void draw_blocklist_page(int top, int h) {
     int m = allowlist_list(al, 64), per = (W - 4) / 17, arows = ah - 3;
     if(per < 1) per = 1;
     for(int i = 0; i < m && i / per < arows; i++) tui_put(at + 1 + i / per, 2 + (i % per) * 17, TC_OK, al[i]);
-    if(m == 0) tui_put(at + 1, 2, TC_DIM, "NOBODY ALLOWED YET: THESE ADDRESSES SKIP THE GATE AND THE BLOCKLIST");
-    tui_put(at + ah - 2, 2, TC_DIM, "A=ALLOW THE LATEST CALLER   X=REMOVE THE LAST ENTRY   U=CLEAR TIMED BLOCKS   S OR ESC=BACK");
+    if(m == 0) tui_putn(at + 1, 2, TC_DIM, "NOBODY ALLOWED YET: THESE ADDRESSES SKIP THE GATE AND THE BLOCKLIST", W - 4);
+    tui_putn(at + ah - 2, 2, TC_DIM, "A=ALLOW THE LATEST CALLER   X=REMOVE THE LAST ENTRY   U=CLEAR TIMED BLOCKS   S OR ESC=BACK", W - 4);
   } else tui_put(top + bh - 2, 2, TC_DIM, "U=CLEAR TIMED BLOCKS   S OR ESC=BACK");
 }
 
@@ -315,19 +626,23 @@ static void draw_help_page(int top, int h) {
     "H  HANG UP THE CALLER ON THE MARKED LINE (ASKS Y/N)",
     "R  RESET THE MARKED LINE'S MODEM, LIKE ATZ (ASKS Y/N)",
     "0-7  MARK A LINE FOR H AND R (MULTI-LINE; DEFAULT: THE CALLER)",
-    "B  BLOCKLIST + ALLOWLIST PAGE   U  CLEAR TIMED BLOCKS (ASKS Y/N)",
     "A  ALLOW THE CALLER (OR THE LATEST ONE): SKIPS GATE AND BLOCKLIST",
+    "G  GRAPHS PAGE: THROUGHPUT, TRAFFIC PER MINUTE, CALLS, TOP SOURCES",
+    "B  BLOCKLIST + ALLOWLIST PAGE   U  CLEAR TIMED BLOCKS (ASKS Y/N)",
     "P  PALETTE COLOR / GREEN / AMBER / WHITE",
     "S  BACK TO THE MAIN SCREEN / REPAINT",
     "Q  QUIT TCPSER (ASKS Y/N): HANGS UP CALLERS, SAVES STATS",
     "",
-    "TERMINAL: 60X16 MINIMUM; TRAFFIC TAKES EVERY SPARE ROW.",
+    "DATA FLOW: ARROWS MOVE WHILE BYTES DO. TURQUOISE = CALLER TO BBS,",
+    "PINK = BBS TO CALLER. SHIELD FLASHES RED ON A DROP, GATE YELLOW ON",
+    "A FAILURE. GREEN ADDRESSES ARE ON THE ALLOWLIST.",
+    "TERMINAL: 60X16 MINIMUM; A TALLER SCREEN SHOWS MORE PANELS.",
     "COLOURS: 256 / 16 / MONO FROM $TERM; NO_COLOR AND TCPSER_TUI_ASCII",
     "ARE HONOURED; TCPSER_TUI_PHOSPHOR=COLOR|GREEN|AMBER|WHITE.",
-    "WARNINGS AND ERRORS FROM THE LOG APPEAR IN THE EVENTS PANE.",
   };
   int n = (int)(sizeof(lines) / sizeof(lines[0]));
-  for(int i = 0; i < n && i < h - 2; i++) tui_put(top + 1 + i, 2, i == 0 || i > 7 ? TC_VALUE : TC_LABEL, lines[i]);
+  for(int i = 0; i < n && i < h - 2; i++) tui_putn(top + 1 + i, 2, i > 9 ? TC_DIM : TC_LABEL, lines[i], W - 4);
+  for(int i = 0; i < 9 && i < h - 2; i++) tui_putn(top + 1 + i, 2, TC_KEY, lines[i], lines[i][1] == '-' ? 3 : 1);
 }
 
 /* ---- the frame ------------------------------------------------------------- */
@@ -341,7 +656,7 @@ static void render(void) {
     return;
   }
   char b1[64];
-  /* system line */
+  /* system line: product, name, ON AIR lamp, clock */
   tui_put(0, 1, TC_ACCENT, "TCPSER " VERSION);
   {
     const char *name = EDITION;
@@ -349,73 +664,92 @@ static void render(void) {
     tui_put(0, (W - len) / 2, TC_VALUE, name);
     time_t now = time(NULL); struct tm tmb; localtime_r(&now, &tmb);
     strftime(b1, sizeof(b1), "%d/%m/%y %H:%M:%S", &tmb);
-    tui_put(0, W - 1 - (int)strlen(b1), TC_KEY, b1);
+    int cc = W - 1 - (int)strlen(b1);
+    tui_put(0, cc, TC_KEY, b1);
+    int on = lines_online(NULL);
+    const char *lamp = on ? "ON AIR" : "STANDBY";
+    int lc = cc - 4 - (int)strlen(lamp);
+    if(lc > (W + len) / 2 + 2) {
+      tui_put(0, lc, on ? TC_REV_ACCENT : TC_DIM, on ? " ON AIR " : "STANDBY");
+      if(!on) tui_put(0, lc - 2, TC_OK, tui_glyph(G_DOT_OFF));
+    }
   }
   tui_hrule(1, 0, W);
 
-  /* status strip: label / value pairs; a counter that needs attention takes
-   * the warning or error colour once it is above zero */
-  {
-    char v[8][32]; int nblk = blocklist_count();
-    fmt_uptime(g_dash.start_time, v[0], sizeof(v[0]));
-    snprintf(v[1], sizeof(v[1]), ":%d", g_dash.port);
-    snprintf(v[2], sizeof(v[2]), "%lu", g_dash.total_connections);
-    snprintf(v[3], sizeof(v[3]), "%lu", g_dash.gate_pass);
-    snprintf(v[4], sizeof(v[4]), "%lu", g_dash.gate_fail);
-    snprintf(v[5], sizeof(v[5]), "%lu", g_dash.blocked);
-    fmt_bytes(g_dash.bytes_in, v[6], sizeof(v[6]));
-    fmt_bytes(g_dash.bytes_out, v[7], sizeof(v[7]));
-    char vb[16]; snprintf(vb, sizeof(vb), "%d", nblk);
-    const struct { const char *label; const char *val; int color; } f[] = {
-      { "UP", v[0], TC_VALUE }, { "PORT", v[1], TC_ACCENT }, { "CALLS", v[2], TC_VALUE },
-      { "PASS", v[3], g_dash.gate_pass ? TC_OK : TC_VALUE }, { "FAIL", v[4], g_dash.gate_fail ? TC_WARN : TC_VALUE },
-      { "DROP", v[5], g_dash.blocked ? TC_BAD : TC_VALUE }, { "IN", v[6], TC_ACCENT }, { "OUT", v[7], TC_ACCENT2 },
-      { "BLOCKED", vb, nblk ? TC_BAD : TC_VALUE },
-    };
-    int c = 1;
-    for(unsigned i = 0; i < sizeof(f) / sizeof(f[0]); i++) {
-      int need = (int)strlen(f[i].label) + 1 + (int)strlen(f[i].val);
-      if(c + need > W - 1) break;
-      tui_put(2, c, TC_LABEL, f[i].label); c += (int)strlen(f[i].label) + 1;
-      tui_put(2, c, f[i].color, f[i].val); c += (int)strlen(f[i].val) + 2;
-    }
-  }
-
-  int top = 3, next = 3;
+  int top = 2;
   int msg_row = H - 2, keys_row = H - 1;
   if(g_page == PG_BLOCKS)      draw_blocklist_page(top, msg_row - top);
   else if(g_page == PG_HELP)   draw_help_page(top, msg_row - top);
+  else if(g_page == PG_GRAPHS) { draw_kpi_strip(top); draw_graphs_page(top + 1, msg_row - top - 1); }
   else {
-    draw_lines_box(top, &next);
-    /* rows for traffic + callers + events; on a short terminal the panes are
-     * dropped from the bottom up: events first, then callers. Traffic keeps at
-     * least two rows, callers a header plus one row, events one row. */
-    int remaining = msg_row - next;
-    int ev_h = remaining >= 14 ? 4 : 3;
-    int cal_h = remaining >= 16 ? 6 : remaining >= 12 ? 5 : 4;
-    int traf_h = remaining - ev_h - cal_h;
-    if(traf_h < 4) { ev_h = 0; traf_h = remaining - cal_h; }
-    if(traf_h < 4) { cal_h = 0; traf_h = remaining; }
-    if(traf_h >= 3) { draw_traffic_box(next, traf_h); next += traf_h; }
-    if(cal_h)       { draw_callers_box(next, cal_h);  next += cal_h; }
-    if(ev_h)        draw_events_box(next, ev_h);
+    /* Height budget. Start from the least every screen gets (counter strip,
+     * compact flow, lines, a bottom area) and spend what is left on upgrades,
+     * most valuable first. */
+    int nl = 0; lines_online(&nl); if(nl == 0) nl = 1;
+    int lines_h = nl + 3;
+    int R = msg_row - top;
+    int kpi_h = 1, flow_h = 4, graph_h = 0;
+    int bottom = R - kpi_h - flow_h - lines_h;
+    /* rows the bottom area must keep: less when its panes sit side by side */
+    int minb = W >= 124 ? 8 : W >= 100 ? 10 : 12;
+    if(bottom < 5) { bottom += flow_h; flow_h = 0; }                     /* tiny screen: no flow */
+    if(flow_h && bottom - 3 >= minb) { flow_h = 7; bottom -= 3; }        /* boxes and both arrow rows */
+    if(bottom - 5 >= minb) { graph_h = 5; bottom -= 5; }                 /* graphs */
+    if(W >= 96 && bottom - 2 >= minb) { kpi_h = 3; bottom -= 2; }        /* counter tiles */
+    if(graph_h && bottom - 2 >= minb + 3) { graph_h += 2; bottom -= 2; }
+    if(graph_h && bottom - 2 >= minb + 6) { graph_h += 2; bottom -= 2; }
+
+    int y = top, next = top;
+    if(kpi_h == 3) draw_kpi_tiles(y); else draw_kpi_strip(y);
+    y += kpi_h;
+    if(flow_h) { draw_flow(y, flow_h); y += flow_h; }
+    if(graph_h) { draw_graph_row(y, graph_h); y += graph_h; }
+    draw_lines_box(y, &next); y = next;
+    int remaining = msg_row - y;
+    if(W >= 124 && remaining >= 8) {
+      /* wide: traffic on the left, callers over events on the right */
+      int lw = W * 56 / 100, rw = W - lw, ch = (remaining + 1) / 2;
+      draw_traffic_box(y, 0, remaining, lw);
+      draw_callers_box(y, lw, ch, rw);
+      draw_events_box(y + ch, lw, remaining - ch, rw);
+    } else if(W >= 100 && remaining >= 9) {
+      /* medium: traffic across, then callers and events side by side */
+      int low = remaining >= 14 ? 6 : 5, cw = 60;
+      draw_traffic_box(y, 0, remaining - low, W);
+      draw_callers_box(y + remaining - low, 0, low, cw);
+      draw_events_box(y + remaining - low, cw, low, W - cw);
+    } else {
+      /* stacked; on a short terminal the panes are dropped from the bottom
+       * up: events first, then callers. Traffic keeps at least two rows. */
+      int ev_h = remaining >= 14 ? 4 : remaining >= 12 ? 3 : 0;
+      int cal_h = remaining >= 16 ? 6 : remaining >= 12 ? 5 : 4;
+      int traf_h = remaining - ev_h - cal_h;
+      if(traf_h < 4) { ev_h = 0; traf_h = remaining - cal_h; }
+      if(traf_h < 4) { cal_h = 0; traf_h = remaining; }
+      if(traf_h >= 3) { draw_traffic_box(y, 0, traf_h, W); y += traf_h; }
+      if(cal_h)       { draw_callers_box(y, 0, cal_h, W);  y += cal_h; }
+      if(ev_h)        draw_events_box(y, 0, ev_h, W);
+    }
   }
 
   /* message line + hotkeys */
   if(g_msg[0] && time(NULL) - g_msg_at > 8 && !g_confirm) g_msg[0] = 0;
   if(g_msg[0]) tui_putn(msg_row, 1, g_confirm ? TC_WARN : TC_VALUE, g_msg, W - 2);
   {
-    static const char *keys_long[][2]  = { {"H", "HANG UP"}, {"R", "RESET"}, {"A", "ALLOW"}, {"B", "LISTS"}, {"U", "UNBLOCK"}, {"P", "PALETTE"}, {"?", "HELP"}, {"Q", "QUIT"} };
-    static const char *keys_short[][2] = { {"H", "HANG"}, {"R", "RESET"}, {"A", "ALLOW"}, {"B", "LIST"}, {"U", "UNBLK"}, {"P", "PAL"}, {"?", "HELP"}, {"Q", "QUIT"} };
-    const char *(*keys)[2] = W >= 78 ? keys_long : keys_short;   /* every key stays visible down to 60 columns */
+    static const char *keys_long[][2]  = { {"H", "HANG UP"}, {"R", "RESET"}, {"A", "ALLOW"}, {"G", "GRAPHS"}, {"B", "LISTS"}, {"U", "UNBLOCK"}, {"P", "PALETTE"}, {"?", "HELP"}, {"Q", "QUIT"} };
+    static const char *keys_mid[][2]   = { {"H", "HANG"}, {"R", "RST"}, {"A", "ALLOW"}, {"G", "GRAPH"}, {"B", "LIST"}, {"U", "UNBL"}, {"P", "PAL"}, {"?", "HELP"}, {"Q", "QUIT"} };
+    static const char *keys_short[][2] = { {"H", "HANG"}, {"R", "RST"}, {"A", "ALLOW"}, {"G", "GRAPH"}, {"B", "LIST"}, {"U", "UNBL"}, {"?", "HELP"}, {"Q", "QUIT"} };
+    const char *(*keys)[2] = W >= 88 ? keys_long : W >= 72 ? keys_mid : keys_short;   /* every key stays visible down to 60 columns (P is in the help there) */
+    int nkeys = W >= 72 ? 9 : 8, gap = W >= 72 ? 2 : 1;
     const char *ph = tui_phosphor();
     int ph_col = W - 1 - (int)strlen(ph), c = 1;
-    for(unsigned i = 0; i < sizeof(keys_long) / sizeof(keys_long[0]); i++) {
+    for(int i = 0; i < nkeys; i++) {
       int need = 2 + (int)strlen(keys[i][1]);
-      if(c + need > ph_col - 2) { ph_col = -1; if(c + need > W - 1) break; }   /* keys win over the phosphor name */
+      if(c + need > ph_col - 2) { ph_col = -1; if(c + need > W - 1) break; }   /* keys win over the palette name */
       char k[8]; snprintf(k, sizeof(k), "%s=", keys[i][0]);
+      int here = (g_page == PG_GRAPHS && keys[i][0][0] == 'G') || (g_page == PG_BLOCKS && keys[i][0][0] == 'B') || (g_page == PG_HELP && keys[i][0][0] == '?');
       tui_put(keys_row, c, TC_KEY, k); c += 2;
-      tui_put(keys_row, c, TC_LABEL, keys[i][1]); c += (int)strlen(keys[i][1]) + 2;
+      tui_put(keys_row, c, here ? TC_REV_INFO : TC_LABEL, keys[i][1]); c += (int)strlen(keys[i][1]) + gap;
     }
     if(ph_col > 0) tui_put(keys_row, ph_col, TC_DIM, ph);
   }
@@ -605,6 +939,9 @@ static void series_bytes(int in, int len) {
   time_t now = time(NULL); series_min_touch(now);
   int m = (int)((now / 60) % 60);
   if(in) g_dash.min_in[m] += (unsigned long)len; else g_dash.min_out[m] += (unsigned long)len;
+  int sx = (int)(now % 60);                                   /* per-second ring for the throughput graph */
+  if(g_dash.sec_stamp[sx] != now) { g_dash.sec_stamp[sx] = now; g_dash.sec_in[sx] = 0; g_dash.sec_out[sx] = 0; }
+  if(in) g_dash.sec_in[sx] += (unsigned long)len; else g_dash.sec_out[sx] += (unsigned long)len;
 }
 
 /* ---- per-line state ------------------------------------------------------
@@ -705,6 +1042,7 @@ void dashboard_note(const char *fmt, ...) {
 void dashboard_stat_connection(const char *ip) {
   pthread_mutex_lock(&dash_mutex);
   g_dash.total_connections++;
+  g_dash.last_attempt = time(NULL);
   if(g_dash.enabled) { series_call(); render(); }
   pthread_mutex_unlock(&dash_mutex);
   (void)ip;
@@ -713,6 +1051,7 @@ void dashboard_stat_connection(const char *ip) {
 void dashboard_stat_blocked(const char *ip) {
   pthread_mutex_lock(&dash_mutex);
   g_dash.blocked++;
+  g_dash.last_drop = g_dash.last_attempt = time(NULL);
   if(!g_dash.enabled) { pthread_mutex_unlock(&dash_mutex); return; }
   series_fail();
   dash_history_entry_t *h = &g_dash.history[g_dash.history_head];
@@ -726,7 +1065,7 @@ void dashboard_stat_blocked(const char *ip) {
 
 void dashboard_stat_gate(int passed, const char *ip) {
   pthread_mutex_lock(&dash_mutex);
-  if(passed) g_dash.gate_pass++; else g_dash.gate_fail++;
+  if(passed) { g_dash.gate_pass++; g_dash.last_gate_pass = time(NULL); } else { g_dash.gate_fail++; g_dash.last_gate_fail = time(NULL); }
   if(!g_dash.enabled) { pthread_mutex_unlock(&dash_mutex); return; }
   if(!passed) {
     series_fail();
@@ -836,6 +1175,7 @@ void dashboard_check_keyboard(void) {
         ask_confirm('x', q);
         break; }
       case 'b': case 'B': g_page = (g_page == PG_BLOCKS) ? PG_MAIN : PG_BLOCKS; tui_invalidate(); break;
+      case 'g': case 'G': g_page = (g_page == PG_GRAPHS) ? PG_MAIN : PG_GRAPHS; tui_invalidate(); break;
       case '?': case '/': g_page = (g_page == PG_HELP) ? PG_MAIN : PG_HELP; tui_invalidate(); break;
       case 's': case 'S': case 27: g_page = PG_MAIN; g_msg[0] = 0; tui_invalidate(); break;
       case 'u': case 'U': ask_confirm('u', "CLEAR ALL TIMED BLOCKS"); break;

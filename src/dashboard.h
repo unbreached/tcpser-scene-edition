@@ -97,6 +97,14 @@ typedef struct {
   unsigned long min_in[60];     /* bytes caller->BBS per minute */
   unsigned long min_out[60];    /* bytes BBS->caller per minute */
   long     min_stamp[60];       /* time/60 of the period the bucket holds */
+  unsigned long sec_in[60];     /* bytes per second, last minute (terminal throughput graph) */
+  unsigned long sec_out[60];
+  time_t   sec_stamp[60];       /* the second the bucket holds */
+  /* when each stage of the data-flow diagram last saw something */
+  time_t last_attempt;          /* a connection arrived */
+  time_t last_drop;             /* blocklist / rate limit dropped one */
+  time_t last_gate_fail;
+  time_t last_gate_pass;
 
   int enabled;
 } dashboard_state_t;
